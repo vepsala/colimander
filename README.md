@@ -12,15 +12,36 @@ Contributions to this repo are also welcome, but no promises on review speed or 
 
 ## Why this exists
 
-Running coding agents (Claude Code, etc.) locally with broad permissions is convenient and a little terrifying. The realistic failure modes:
+I work on 3-5 projects in parallel. My machine is an M3 with 36 GB of RAM. That's a lot, but it's not enough to keep five fully-provisioned dev environments running at once — language servers, Postgres, browsers, agent VMs all stacked. So today I run 1-2 "safe" environments and use unsafe shortcuts (host credentials, host filesystem, no isolation) on the other 2-3 that I'm only touching occasionally.
 
-1. The agent does something stupid in your real filesystem.
-2. A dependency the agent pulled in does something stupid in your real filesystem.
-3. A credential the agent had access to leaks to a pastebin / chat log / phone-home backdoor.
+I don't want to give up local-first development. Agents like Claude Code thrive when they can see and use the full environment — language servers, real databases, real tools. The cloud-sandbox version is always a step behind. The cost is that "local-first agentic development" is currently synonymous with "the agent has access to your real GitHub token, your real DB password, your real filesystem."
 
-Sandboxing the filesystem is well-trodden (Docker, Lima, devcontainers). The credential leak is the part most setups handwave. The state of the art is roughly "give the agent a fresh PAT and rotate it after." If you only notice the leak when GitHub emails you about it, the rotation is already late.
+The two halves of the chore are:
 
-Colimander tries to make the leak harmless by ensuring the agent never holds a credential that works off your machine.
+1. **Lifecycle ergonomics** — spinning up, swapping between, and tearing down environments without losing track of what's where, on a machine where you can't keep all of them hot.
+2. **Safety without overhead** — being able to run `claude --dangerously-skip-permissions` in any of them without holding your breath.
+
+Colimander tackles both:
+
+- Each project is a one-command Colima VM with edit-over-SSH (no host bind-mount), fast start/stop/recreate, predictable ports, and a stable `.local` hostname for browser access. Easy enough that you actually do it for every project, not just the important ones.
+- All sensitive outbound traffic — git operations, LLM API keys, prod databases — is routed through a host-side broker that holds the real credentials. The VM only ever sees inert local handles. A leaked handle is useless off-host.
+
+The broker is what lets us *relax* the rest of the sandbox. Most agent-sandbox setups need egress allow-lists, DNS filtering, iptables rules — because they're trying to prevent credential exfiltration at the network layer. If the credential the agent has access to doesn't work off your machine in the first place, you don't need that ceremony. The VM can have wide network access; the interesting things are gated at the broker.
+
+### What "scoped" actually means
+
+A concrete example. GitHub's permission model — even fine-grained PATs — caps out at "this token can read/write these repos with these permissions." GitHub Apps can be more precise but you need to install them per org, which is heavyweight when you collaborate across orgs you don't control. Forgejo has similar limitations.
+
+Colimander's broker can enforce policies the platform itself doesn't expose. For example:
+
+- Allow writes to `org/repo-A` and `org/repo-B`.
+- Allow `POST /orgs/org/repos` (create new repos in the org).
+- Deny `DELETE /repos/*` (no repo deletion).
+- Deny `PATCH /repos/*` payloads that rename.
+
+The broker holds your real PAT (or App credentials, or Forgejo token) and acts as a policy-enforcing reverse proxy in front of `api.github.com` / your Forgejo host. The agent in the VM gets a handle that only this proxy honors, and only for operations the proxy allows.
+
+This is what makes `--dangerously-skip-permissions` actually defensible: not because the agent is well-behaved, but because the worst it can do is bounded by the policy.
 
 ## The design in one paragraph
 
@@ -53,7 +74,24 @@ Include ~/.lima/*/ssh.config
 
 **Why no bind-mount:** if the VM gets popped and drops a malicious binary, the host never sees it. macOS Gatekeeper can't quarantine files written over virtiofs anyway, so the only safe answer is "don't have them on the host filesystem in the first place."
 
-### 3. The credential broker
+### 3. Ports and browser access
+
+Multiple projects running at once **will** collide on common dev ports (3000, 5173, 5432, 8000). You shouldn't have to think about this.
+
+Each profile starts with `--network-address`, so the VM gets a routable IP from the host (e.g., `192.168.64.x`). Colimander adds a per-profile entry to `/etc/hosts` (one-time sudo prompt on first run):
+
+```
+192.168.64.8   myproj.local
+192.168.64.9   otherproj.local
+```
+
+Now `http://myproj.local:3000` and `http://otherproj.local:3000` both work in your host browser, simultaneously, with no port collision. No port-forwarding tables to maintain. The agent inside the VM can advertise URLs as `http://localhost:3000` and you, on the host, just substitute the profile hostname.
+
+`colimander ports myproj` shows what's listening inside the VM, so you can copy a URL into your browser without guessing.
+
+For services that *need* a stable host-side port mapping (e.g., a desktop DB GUI that only speaks `localhost`), per-profile explicit mappings are declared in the profile YAML and listed by `colimander ports`.
+
+### 4. The credential broker
 
 A host daemon (`colimanderd`) that:
 
@@ -72,7 +110,7 @@ GITHUB_TOKEN='cmd-handle-7af2'
 
 Leaked off-host, these are dead — they point at non-routable addresses or refer to handles only this daemon understands.
 
-### 4. Borrowed-secret slots
+### 5. Borrowed-secret slots
 
 Lending a real prod credential temporarily, without rotation pain:
 
@@ -88,7 +126,7 @@ colimander secret add \
 
 TTL is required (no infinite borrowed secrets). After expiry: listener tears down, Keychain entry wipes, any leaked handle is dead.
 
-### 5. Secret CLI
+### 6. Secret CLI
 
 ```
 colimander secret ls [--profile foo] [--all]
@@ -106,7 +144,7 @@ colimander secret unbind NAME --profile foo
 
 `show` defaults to printing the local handle (safe to display). `--reveal` prints the real value behind a macOS Touch ID prompt, so a compromised in-VM agent that gains a shell back to the host can't silently exfiltrate by calling the CLI in a loop.
 
-### 6. Easy resize + proactive health
+### 7. Easy resize + proactive health
 
 `colimander scale myproj --memory 16 --disk 80` runs the stop / restart-with-new-values dance. Memory and CPU are easy. Disk is grow-only (Colima limit).
 
