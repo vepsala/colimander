@@ -8,6 +8,9 @@
 *.so
 *.dylib
 
+# Colimander binary
+/colimander
+
 # Test binary, built with `go test -c`
 *.test
 

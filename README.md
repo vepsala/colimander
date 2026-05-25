@@ -176,7 +176,19 @@ If you fork this and want a starting point on things I haven't decided:
 
 ## Status
 
-Nothing is built yet. This is the design before the code. If you're reading this hoping for v1: there is no v1 yet.
+v0 — the lifecycle CLI shell, no broker yet. What's working:
+
+- `colimander create <name> [--cpu N --memory G --disk G --start]` — creates a Colimander-managed profile with a marker file at `~/.colima/<name>/.colimander.json`. The marker is the safety guardrail: mutating commands refuse to touch profiles without one.
+- `colimander start | stop | destroy | ssh | status <name>` — wrappers that respect the marker.
+- `colimander ls` — lists Colimander-managed profiles, including ones that were created but never started.
+- `colimander ls --all` — shows every Colima profile on the host (read-only); makes it visible which are managed and which aren't.
+
+What's not built:
+- The credential broker (`colimanderd`) and `secret` subcommands.
+- The `.local` hostname / `/etc/hosts` wiring for per-profile browser access.
+- The `colimander scale` resize helper and `colimander health` indicator.
+
+Build it yourself: `go build -o colimander .` from the repo root.
 
 ## Prior art that informed this
 
