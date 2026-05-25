@@ -59,7 +59,7 @@ Provisioning uses Colima's declarative `provision:` blocks (cloud-init-style, id
 
 ### 2. No host bind-mount, edit-over-SSH
 
-Default mount mode is `--mount-none`. Project files live only inside the VM disk. You import a project by either:
+No host home bind-mount. Project files live only inside the VM disk. (Colima always mounts its own image cache read-only — that's unavoidable without bypassing Colima, but the cache contains only downloaded VM images, no user files.) You import a project by either:
 
 - `colimander create myproj --from-repo git@github.com:you/myproj` — the VM clones it on first boot, via the proxy.
 - `colimander create myproj --import-dir ~/code/myproj` — one-shot `limactl cp` at creation; the host copy is no longer touched after.
@@ -176,19 +176,22 @@ If you fork this and want a starting point on things I haven't decided:
 
 ## Status
 
-v0 — the lifecycle CLI shell, no broker yet. What's working:
+v0 — the lifecycle CLI shell, no broker yet. What's working, validated end-to-end on macOS with an actual VM boot:
 
-- `colimander create <name> [--cpu N --memory G --disk G --start]` — creates a Colimander-managed profile with a marker file at `~/.colima/<name>/.colimander.json`. The marker is the safety guardrail: mutating commands refuse to touch profiles without one.
-- `colimander start | stop | destroy | ssh | status <name>` — wrappers that respect the marker.
-- `colimander ls` — lists Colimander-managed profiles, including ones that were created but never started.
-- `colimander ls --all` — shows every Colima profile on the host (read-only); makes it visible which are managed and which aren't.
+- `colimander create <name> [--cpu N --memory G --disk G --start]` — writes a marker at `~/.colima/<name>/.colimander.json` plus a colima.yaml that omits the default host home mount.
+- `colimander start <name>` — boots the VM with an empty placeholder mount that suppresses Colima's default `$HOME`/`$TMP` mounts. Verified inside the VM: `/Users/tapio/code`, `~/.ssh`, dotfiles all inaccessible.
+- `colimander stop | destroy | ssh | status <name>` — wrappers that respect the marker. Destroy also wipes the placeholder mount stub.
+- `colimander ls` — lists Colimander-managed profiles, including marker-only profiles that haven't been started yet.
+- `colimander ls --all` — shows every Colima profile on the host (read-only); makes visible which are managed.
+- **Safety guardrail**: all mutating commands refuse profiles without a Colimander marker unless `--force-unmanaged` is passed. Verified against an existing host with 7 unmanaged profiles (1 running) — guardrail correctly refused every attempt.
 
 What's not built:
 - The credential broker (`colimanderd`) and `secret` subcommands.
 - The `.local` hostname / `/etc/hosts` wiring for per-profile browser access.
 - The `colimander scale` resize helper and `colimander health` indicator.
+- A sibling project for remote-VPS environments (e.g. Hetzner) — same model, different substrate.
 
-Build it yourself: `go build -o colimander .` from the repo root.
+Build: `go build -o colimander .` from the repo root.
 
 ## Prior art that informed this
 
