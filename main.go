@@ -914,6 +914,7 @@ func cmdSetup(args []string) error {
 			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 		}
 	}
+	installBaseline(name)
 	installPackages(name, pkgs)
 
 	fmt.Println()

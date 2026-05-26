@@ -58,6 +58,48 @@ sudo apt-get install -y -qq postgresql-16
 sudo systemctl enable --now postgresql
 echo "  PostgreSQL 16 listening; connect locally as: sudo -u postgres psql"`,
 	},
+	{
+		ID:          "node-mise",
+		Label:       "Node.js LTS (via mise)",
+		Description: "mise as the polyglot version manager + Node LTS + pnpm. mise auto-switches versions per project via .tool-versions / .mise.toml.",
+		Script: `set -euo pipefail
+sudo apt-get update -qq
+sudo apt-get install -y -qq curl ca-certificates
+# Install mise to ~/.local/bin (no sudo required).
+curl -fsSL https://mise.run | sh
+# Activate mise in interactive bash + zsh shells.
+if ! grep -q 'mise activate bash' "$HOME/.bashrc" 2>/dev/null; then
+  echo 'eval "$(~/.local/bin/mise activate bash)"' >> "$HOME/.bashrc"
+fi
+if [ -f "$HOME/.zshrc" ] && ! grep -q 'mise activate zsh' "$HOME/.zshrc"; then
+  echo 'eval "$(~/.local/bin/mise activate zsh)"' >> "$HOME/.zshrc"
+fi
+# Install Node LTS as the global default, then pnpm on top.
+~/.local/bin/mise use -g node@lts
+~/.local/bin/mise exec -- npm install -g pnpm
+echo "  Node LTS + pnpm via mise. New shells get it from .bashrc/.zshrc."`,
+	},
+}
+
+// baselineInstallScript runs once on every newly-created profile. tmux is a
+// universally-useful terminal multiplexer for keeping work alive across SSH
+// sessions; the user asked for it without prompting.
+const baselineInstallScript = `set -euo pipefail
+sudo apt-get update -qq
+sudo apt-get install -y -qq tmux
+echo "  tmux installed."`
+
+// installBaseline runs the universal baseline inside a freshly-started VM.
+// Failures are warnings, not fatal — the user can re-run via colima ssh.
+func installBaseline(profile string) {
+	fmt.Println("\n--- baseline tools ---")
+	cmd := exec.Command("colima", "ssh", "-p", profile, "--", "bash", "-s")
+	cmd.Stdin = strings.NewReader(baselineInstallScript)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: baseline install exited with %v. Re-run manually: colimander ssh %s -- 'sudo apt-get install -y tmux'\n", err, profile)
+	}
 }
 
 // promptForPackages is the standalone (non-wizard) huh prompt used by
