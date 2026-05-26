@@ -412,11 +412,25 @@ func startProfile(m *marker) error {
 // and wires the VM-side config so git/api traffic flows through it. Called
 // from the wizard (with explicit user consent) and from `colimander start`
 // (when a policy file already exists for the profile).
+//
+// If the profile's policy has no Handle yet (older profiles created before
+// Basic-auth identity landed), one is generated and saved here so existing
+// VMs upgrade transparently on next start.
 func activateBrokerForProfile(profile string) error {
+	pol, err := loadPolicy(profile)
+	if err != nil {
+		return fmt.Errorf("load policy: %w", err)
+	}
+	if pol.Handle == "" {
+		pol.Handle = generateHandle()
+		if err := savePolicy(profile, pol); err != nil {
+			return fmt.Errorf("save policy with new handle: %w", err)
+		}
+	}
 	if err := ensureBrokerRunning(); err != nil {
 		return fmt.Errorf("broker start: %w", err)
 	}
-	if err := wireBrokerInVM(profile); err != nil {
+	if err := wireBrokerInVM(profile, pol.Handle); err != nil {
 		return fmt.Errorf("wire broker in VM: %w", err)
 	}
 	return nil
@@ -432,14 +446,19 @@ func ensureBrokerRunning() error {
 }
 
 // wireBrokerInVM configures the VM to route github.com traffic through the
-// broker on the host. Uses `host.lima.internal` so we don't need a separate
-// hostname or /etc/hosts edit inside the VM.
-func wireBrokerInVM(profile string) error {
-	brokerURL := fmt.Sprintf("http://host.lima.internal:%d", defaultBrokerPort)
-	gitConfigVar := fmt.Sprintf("url.%s/git/.insteadOf", brokerURL)
-	profileLine := fmt.Sprintf(`export GITHUB_API_URL=%s/api`, brokerURL)
+// broker on the host. The broker URL embeds Basic-auth creds (profile name
+// as username, handle as password); the broker decodes them on each request
+// to identify and authorize the profile. Uses `host.lima.internal` so we
+// don't need a separate hostname or /etc/hosts edit inside the VM.
+func wireBrokerInVM(profile, handle string) error {
+	brokerWithAuth := fmt.Sprintf("http://%s:%s@host.lima.internal:%d", profile, handle, defaultBrokerPort)
+	gitConfigVar := fmt.Sprintf("url.%s/git/.insteadOf", brokerWithAuth)
+	profileLine := fmt.Sprintf(`export GITHUB_API_URL=%s/api`, brokerWithAuth)
 
 	steps := [][]string{
+		// Drop any previous insteadOf rewrites for our broker URL so we don't
+		// pile up multiple entries with different handles after a rewire.
+		{"sh", "-c", `git config --global --get-regexp '^url\..*host\.lima\.internal:8765.*\.insteadof$' | awk '{print $1}' | while read k; do git config --global --unset-all "$k"; done; true`},
 		// Rewrite https://github.com/ → broker /git/ for all git operations.
 		{"git", "config", "--global", gitConfigVar, "https://github.com/"},
 		// Surface GITHUB_API_URL to login shells (octokit / many SDKs respect this).
@@ -835,6 +854,7 @@ func cmdSetup(args []string) error {
 	pkgs := pkgsFromIDs(pickedPkgIDs)
 	policy := &Policy{
 		Version:       policyVersion,
+		Handle:        generateHandle(),
 		AllowedOwners: append([]string{ghUser}, pickedOrgs...),
 		DenyRules:     filterRulesByID(allRules, pickedDenyIDs),
 	}

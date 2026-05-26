@@ -24,13 +24,13 @@ package main
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -55,11 +55,6 @@ type broker struct {
 	auditMu    sync.Mutex
 	devLoop    bool
 	devProfile string // when devLoop, every loopback request is attributed to this profile
-
-	// ipMap caches the result of `colima list --json` for source-IP→profile lookup.
-	ipMapMu sync.Mutex
-	ipMap   map[string]string
-	ipMapAt time.Time
 
 	// gh token cache.
 	tokenMu sync.Mutex
@@ -94,53 +89,39 @@ func (b *broker) githubToken() (string, error) {
 }
 
 // ----------------------------- profile identity -----------------------------
+//
+// We can't use source IP — lima/vz forwards the VM's outbound
+// `host.lima.internal` connections via a host-side socket, so requests arrive
+// at the broker as loopback. Instead, the VM presents HTTP Basic auth where
+// username = profile name and password = the handle stored in that profile's
+// policy.json. The wizard injects the credential into git config and the
+// `GITHUB_API_URL` env var so every outbound rewrite carries it transparently.
 
-func (b *broker) profileFor(remoteAddr string) (string, error) {
-	host, _, err := net.SplitHostPort(remoteAddr)
+// authProfile reads Basic auth from the request, verifies the handle matches
+// the named profile's stored handle, and returns the profile name and its
+// policy. Constant-time compare to avoid trivial timing distinguishers
+// between "wrong profile" and "wrong handle".
+func (b *broker) authProfile(r *http.Request) (string, *Policy, error) {
+	if b.devLoop {
+		if pol, err := loadPolicyForProfile(b.devProfile); err == nil {
+			return b.devProfile, pol, nil
+		}
+	}
+	user, pass, ok := r.BasicAuth()
+	if !ok || user == "" {
+		return "", nil, errors.New("no basic-auth credential (broker expects username=profile, password=handle)")
+	}
+	pol, err := loadPolicyForProfile(user)
 	if err != nil {
-		return "", fmt.Errorf("parse remote %q: %w", remoteAddr, err)
+		return user, nil, fmt.Errorf("unknown profile %q (%v)", user, err)
 	}
-	if isLoopback(host) {
-		if b.devLoop {
-			return b.devProfile, nil
-		}
-		return "", errors.New("loopback source is not a VM (start with --dev-allow-loopback for tests)")
+	if pol.Handle == "" {
+		return user, nil, fmt.Errorf("profile %q has no handle configured; run `colimander broker rewire %s`", user, user)
 	}
-	b.ipMapMu.Lock()
-	if time.Since(b.ipMapAt) < 5*time.Second {
-		if name, ok := b.ipMap[host]; ok {
-			b.ipMapMu.Unlock()
-			return name, nil
-		}
+	if subtle.ConstantTimeCompare([]byte(pol.Handle), []byte(pass)) != 1 {
+		return user, nil, errors.New("handle mismatch")
 	}
-	// Refresh from colima.
-	coli, err := listProfiles()
-	if err != nil {
-		b.ipMapMu.Unlock()
-		return "", fmt.Errorf("colima list: %w", err)
-	}
-	m := map[string]string{}
-	for _, e := range coli {
-		if e.Address != "" {
-			m[e.Address] = e.Name
-		}
-	}
-	b.ipMap = m
-	b.ipMapAt = time.Now()
-	name, ok := m[host]
-	b.ipMapMu.Unlock()
-	if !ok {
-		return "", fmt.Errorf("no colima profile is listening on source IP %s", host)
-	}
-	return name, nil
-}
-
-func isLoopback(host string) bool {
-	if host == "127.0.0.1" || host == "::1" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return user, pol, nil
 }
 
 // ----------------------------- audit ----------------------------------------
@@ -195,14 +176,9 @@ func (b *broker) handleAPI(w http.ResponseWriter, r *http.Request) {
 		upstreamPath = "/"
 	}
 
-	profile, err := b.profileFor(r.RemoteAddr)
+	profile, policy, err := b.authProfile(r)
 	if err != nil {
 		b.errorResponse(w, http.StatusForbidden, "broker: "+err.Error())
-		return
-	}
-	policy, err := loadPolicyForProfile(profile)
-	if err != nil {
-		b.errorResponse(w, http.StatusForbidden, fmt.Sprintf("broker: no policy for profile %q (%v)", profile, err))
 		return
 	}
 
@@ -222,12 +198,12 @@ func (b *broker) handleAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	copyHeadersExceptAuth(req.Header, r.Header)
-	token, err := b.githubToken()
+	tokn, err := b.githubToken()
 	if err != nil {
 		b.errorResponse(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	req.Header.Set("Authorization", "token "+token)
+	req.Header.Set("Authorization", "token "+tokn)
 	req.Header.Set("User-Agent", "colimander-broker/"+version)
 
 	resp, err := http.DefaultClient.Do(req)
@@ -256,14 +232,9 @@ func (b *broker) handleGit(w http.ResponseWriter, r *http.Request) {
 	endpoint := parts[2]
 	upstreamPath := "/" + owner + "/" + repo + "/" + endpoint
 
-	profile, err := b.profileFor(r.RemoteAddr)
+	profile, policy, err := b.authProfile(r)
 	if err != nil {
 		b.errorResponse(w, http.StatusForbidden, "broker: "+err.Error())
-		return
-	}
-	policy, err := loadPolicyForProfile(profile)
-	if err != nil {
-		b.errorResponse(w, http.StatusForbidden, fmt.Sprintf("broker: no policy for profile %q (%v)", profile, err))
 		return
 	}
 
@@ -383,7 +354,7 @@ func processAlive(pid int) bool {
 
 func cmdBroker(args []string) error {
 	if len(args) < 1 {
-		return errors.New("usage: colimander broker {run|start|stop|status|tail}")
+		return errors.New("usage: colimander broker {run|start|stop|status|tail|rewire <profile>}")
 	}
 	switch args[0] {
 	case "run":
@@ -396,9 +367,40 @@ func cmdBroker(args []string) error {
 		return brokerStatus(args[1:])
 	case "tail":
 		return brokerTail(args[1:])
+	case "rewire":
+		return brokerRewire(args[1:])
 	default:
 		return fmt.Errorf("unknown broker subcommand %q", args[0])
 	}
+}
+
+// brokerRewire regenerates the per-profile Basic-auth handle and re-applies
+// the VM-side git/api routing. Use it when:
+//   - upgrading an existing profile to the handle-based identity (older
+//     profiles created before this landed have policy.Handle == "");
+//   - you suspect the handle has leaked and want to rotate it.
+//
+// The VM keeps running — only its `git config` and `/etc/profile.d` are
+// rewritten over SSH. The broker reloads policy per request, so no daemon
+// restart is required.
+func brokerRewire(args []string) error {
+	if len(args) < 1 || strings.HasPrefix(args[0], "-") {
+		return errors.New("usage: colimander broker rewire <profile>")
+	}
+	name := args[0]
+	pol, err := loadPolicy(name)
+	if err != nil {
+		return err
+	}
+	pol.Handle = generateHandle()
+	if err := savePolicy(name, pol); err != nil {
+		return err
+	}
+	if err := wireBrokerInVM(name, pol.Handle); err != nil {
+		return err
+	}
+	fmt.Printf("Rewired %q. New handle is in %s.\n", name, policyPath(name))
+	return nil
 }
 
 func brokerRun(args []string) error {

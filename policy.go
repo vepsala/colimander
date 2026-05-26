@@ -14,6 +14,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,12 +24,30 @@ import (
 	"strings"
 )
 
+// generateHandle returns a 32-char hex string suitable for use as the
+// per-profile shared secret presented over HTTP Basic auth.
+func generateHandle() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(fmt.Sprintf("crypto/rand failed: %v", err))
+	}
+	return hex.EncodeToString(b[:])
+}
+
 const policyVersion = 1
 
 // Policy is the on-disk policy file shape, one per profile at
 // ~/.colima/<name>/policy.json.
+//
+// Handle is the per-profile shared secret the VM presents in HTTP Basic auth
+// (username = profile name, password = handle). The broker uses this to
+// identify which profile is calling and to gate access — source-IP-based
+// identity doesn't work because lima/vz forwards the VM's outbound
+// host.lima.internal connections via a host-side socket, so they arrive at
+// the broker as loopback.
 type Policy struct {
 	Version       int        `json:"version"`
+	Handle        string     `json:"handle"`
 	AllowedOwners []string   `json:"allowed_owners"`
 	DenyRules     []DenyRule `json:"deny_rules"`
 }
