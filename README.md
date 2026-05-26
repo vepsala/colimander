@@ -2,17 +2,20 @@
 
 Local agent orchestrator for macOS, built on top of [Colima](https://colima.run) / [Lima](https://lima-vm.io), with a credential-firewalling proxy so a compromised agent inside a sandboxed environment can't exfiltrate anything that works off your machine.
 
-## Heads up — this is vibe coded
+## Why this exists
+This is a local tool I created for myself, because orchestrating multiple dev environments is annoying locally. I have experimented also with fly's sprites and hetzner, but so far I have not had the time to do that properly. This same approach would work great on any other machines too, but this version is for macos.
 
-This is a one-person, "figuring it out as I go" project. I'm building Colimander because I want it for my own setup, not because I have a master plan.
+I don't suggest anyone to use this blindly. I made this public because I thought it could be useful for someone to see, "food for thought". 
 
-If you read this and think *"the idea is interesting but the implementation is shaky"* — you're probably right. **Please feel free to take the idea and build a better version.** I'd rather see someone do this properly than guard a half-finished thing. Fork freely, no need to ask.
+On the roadmap would be next to add some socks5 proxy or something like that, making it possible to analyze and control the outbound traffic.
 
-Contributions to this repo are also welcome, but no promises on review speed or direction.
+# Documentation
+
+Everything from here on is auto generated with LLM and I barely read it:
 
 ## Why this exists
 
-I work on 3-5 projects in parallel. My machine is an M3 with 36 GB of RAM. That's a lot, but it's not enough to keep five fully-provisioned dev environments running at once — language servers, Postgres, browsers, agent VMs all stacked. So today I run 1-2 "safe" environments and use unsafe shortcuts (host credentials, host filesystem, no isolation) on the other 2-3 that I'm only touching occasionally.
+I work on 3-5 projects in parallel. My machine is an M3 with 36 GB of RAM. It's not enough to keep five fully-provisioned dev environments running at once — language servers, Postgres, browsers, agent VMs all stacked. So today I run 1-2 "safe" environments and use unsafe shortcuts (host credentials, host filesystem, no isolation) on the other 2-3 that I'm only touching occasionally.
 
 I don't want to give up local-first development. Agents like Claude Code thrive when they can see and use the full environment — language servers, real databases, real tools. The cloud-sandbox version is always a step behind. The cost is that "local-first agentic development" is currently synonymous with "the agent has access to your real GitHub token, your real DB password, your real filesystem."
 
