@@ -9,6 +9,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -446,22 +447,36 @@ func ensureBrokerRunning() error {
 }
 
 // wireBrokerInVM configures the VM to route github.com traffic through the
-// broker on the host. The broker URL embeds Basic-auth creds (profile name
-// as username, handle as password); the broker decodes them on each request
-// to identify and authorize the profile. Uses `host.lima.internal` so we
-// don't need a separate hostname or /etc/hosts edit inside the VM.
+// broker on the host. Auth is presented via `http.<URL>.extraHeader` (git's
+// canonical pattern for static Authorization headers on a specific URL),
+// not via URL-embedded user:pass — git's HTTP client doesn't reliably
+// forward URL-embedded passwords on every request (POST/redirect/etc.) but
+// extraHeader is always sent verbatim. For API tools we still embed creds
+// in GITHUB_API_URL so octokit / SDKs that respect that env get them.
 func wireBrokerInVM(profile, handle string) error {
-	brokerWithAuth := fmt.Sprintf("http://%s:%s@host.lima.internal:%d", profile, handle, defaultBrokerPort)
-	gitConfigVar := fmt.Sprintf("url.%s/git/.insteadOf", brokerWithAuth)
-	profileLine := fmt.Sprintf(`export GITHUB_API_URL=%s/api`, brokerWithAuth)
+	brokerBase := fmt.Sprintf("http://host.lima.internal:%d", defaultBrokerPort)
+	gitInsteadOfVar := fmt.Sprintf("url.%s/git/.insteadOf", brokerBase)
+	extraHeaderVar := fmt.Sprintf("http.%s/.extraHeader", brokerBase)
+	basicCred := base64.StdEncoding.EncodeToString([]byte(profile + ":" + handle))
+	extraHeaderVal := "Authorization: Basic " + basicCred
+	apiURLWithAuth := fmt.Sprintf("http://%s:%s@host.lima.internal:%d/api", profile, handle, defaultBrokerPort)
+	profileLine := fmt.Sprintf(`export GITHUB_API_URL=%s`, apiURLWithAuth)
+
+	// Drop any stale colimander-managed entries from prior runs (handles get
+	// rotated on rewire; we don't want two extraHeader values racing).
+	cleanup := `set -e
+for k in $(git config --global --get-regexp '^url\..*host\.lima\.internal.*\.insteadof$' 2>/dev/null | awk '{print $1}'); do
+  git config --global --unset-all "$k" 2>/dev/null || true
+done
+for k in $(git config --global --get-regexp '^http\..*host\.lima\.internal.*\.extraheader$' 2>/dev/null | awk '{print $1}'); do
+  git config --global --unset-all "$k" 2>/dev/null || true
+done
+true`
 
 	steps := [][]string{
-		// Drop any previous insteadOf rewrites for our broker URL so we don't
-		// pile up multiple entries with different handles after a rewire.
-		{"sh", "-c", `git config --global --get-regexp '^url\..*host\.lima\.internal:8765.*\.insteadof$' | awk '{print $1}' | while read k; do git config --global --unset-all "$k"; done; true`},
-		// Rewrite https://github.com/ → broker /git/ for all git operations.
-		{"git", "config", "--global", gitConfigVar, "https://github.com/"},
-		// Surface GITHUB_API_URL to login shells (octokit / many SDKs respect this).
+		{"bash", "-c", cleanup},
+		{"git", "config", "--global", gitInsteadOfVar, "https://github.com/"},
+		{"git", "config", "--global", extraHeaderVar, extraHeaderVal},
 		{"sudo", "sh", "-c", fmt.Sprintf("printf '%%s\\n' %q > /etc/profile.d/colimander.sh", profileLine)},
 	}
 	for _, step := range steps {
