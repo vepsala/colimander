@@ -13,11 +13,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -1250,6 +1252,10 @@ func runLimactl(args ...string) error {
 
 // importDirIntoVM copies a host directory into the VM at /home/<vmuser>/<basename>.
 // Caller is responsible for ensuring the VM is running.
+//
+// While limactl cp runs (silent, single-stream scp), a background goroutine
+// polls the VM target with `du -sb` every 2s and rewrites a single line with
+// "X / Y (Z%) — elapsed". Stops on completion or any limactl error.
 func importDirIntoVM(profile, srcDir string) error {
 	abs, err := filepath.Abs(srcDir)
 	if err != nil {
@@ -1268,8 +1274,124 @@ func importDirIntoVM(profile, srcDir string) error {
 	}
 	instance := limaInstanceName(profile)
 	dest := fmt.Sprintf("%s:/home/%s/", instance, vmUser)
+	vmTarget := fmt.Sprintf("/home/%s/%s", vmUser, filepath.Base(abs))
+
 	fmt.Printf("Importing %s into %s%s ...\n", abs, dest, filepath.Base(abs))
-	return runLimactl("cp", "-r", abs, dest)
+
+	srcSize, sizeErr := dirAppSize(abs)
+
+	cmd := exec.Command("limactl", "cp", "-r", abs, dest)
+	cmd.Env = append(os.Environ(), "LIMA_HOME="+limaHome())
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	if sizeErr == nil && srcSize > 0 && isTTY(os.Stdout) {
+		go func() {
+			defer close(done)
+			progressLoop(profile, vmTarget, srcSize, stop)
+		}()
+	} else {
+		close(done)
+	}
+
+	waitErr := cmd.Wait()
+	close(stop)
+	<-done
+
+	if isTTY(os.Stdout) && sizeErr == nil && srcSize > 0 {
+		if waitErr == nil {
+			fmt.Printf("\r  %s imported.%s\n", humanSize(srcSize), strings.Repeat(" ", 40))
+		} else {
+			fmt.Printf("\r%s\r", strings.Repeat(" ", 80))
+		}
+	}
+	return waitErr
+}
+
+func dirAppSize(p string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(p, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
+}
+
+func progressLoop(profile, vmPath string, total int64, stop <-chan struct{}) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	start := time.Now()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			n, err := vmPathBytes(profile, vmPath)
+			if err != nil {
+				continue
+			}
+			pct := float64(n) / float64(total) * 100
+			if pct > 100 {
+				pct = 100
+			}
+			elapsed := time.Since(start).Round(time.Second)
+			fmt.Printf("\r  %s / %s  (%3.0f%%)  %s elapsed   ",
+				humanSize(n), humanSize(total), pct, elapsed)
+		}
+	}
+}
+
+func vmPathBytes(profile, path string) (int64, error) {
+	out, err := exec.Command("colima", "ssh", "-p", profile, "--", "du", "-sb", path).Output()
+	if err != nil {
+		return 0, err
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 1 {
+		return 0, errors.New("empty du output")
+	}
+	return strconv.ParseInt(fields[0], 10, 64)
+}
+
+func humanSize(n int64) string {
+	const (
+		kib = 1024
+		mib = kib * 1024
+		gib = mib * 1024
+	)
+	switch {
+	case n >= gib:
+		return fmt.Sprintf("%.2f GiB", float64(n)/float64(gib))
+	case n >= mib:
+		return fmt.Sprintf("%.1f MiB", float64(n)/float64(mib))
+	case n >= kib:
+		return fmt.Sprintf("%.0f KiB", float64(n)/float64(kib))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
+}
+
+func isTTY(f *os.File) bool {
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
 }
 
 // ------------------------------ ports ---------------------------------------
