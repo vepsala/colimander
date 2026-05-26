@@ -8,13 +8,16 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -31,6 +34,10 @@ type marker struct {
 	CPU               int       `json:"cpu"`
 	Memory            int       `json:"memory"`
 	Disk              int       `json:"disk"`
+	// ImportedFrom records what was loaded into the VM at create time. Either a
+	// host path (mode "dir") or a git URL (mode "repo"). For audit only.
+	ImportedFrom string `json:"imported_from,omitempty"`
+	ImportMode   string `json:"import_mode,omitempty"`
 }
 
 func colimaProfileDir(name string) string {
@@ -189,14 +196,25 @@ func cmdLs(args []string) error {
 		managedSet[n] = true
 	}
 
-	const rowFmt = "%-20s %-8s %-10s %-4s %-7s %-7s %-16s %s\n"
-	fmt.Printf(rowFmt, "PROFILE", "MANAGED", "STATUS", "CPU", "MEM", "DISK", "ADDRESS", "RUNTIME")
+	const rowFmt = "%-20s %-8s %-7s %-10s %-4s %-7s %-7s %-16s %s\n"
+	fmt.Printf(rowFmt, "PROFILE", "MANAGED", "POLICY", "STATUS", "CPU", "MEM", "DISK", "ADDRESS", "RUNTIME")
+
+	policyStr := func(name string, isManaged bool) string {
+		if !isManaged {
+			return "-"
+		}
+		if _, err := os.Stat(policyPath(name)); err == nil {
+			return "yes"
+		}
+		return "no"
+	}
 
 	printRow := func(name string, e *colimaListEntry, isManaged bool) {
 		managedStr := "no"
 		if isManaged {
 			managedStr = "yes"
 		}
+		pol := policyStr(name, isManaged)
 		if e != nil {
 			addr := e.Address
 			if addr == "" {
@@ -206,7 +224,7 @@ func cmdLs(args []string) error {
 			if runtime == "" {
 				runtime = "-"
 			}
-			fmt.Printf(rowFmt, name, managedStr, e.Status, fmt.Sprintf("%d", e.CPUs),
+			fmt.Printf(rowFmt, name, managedStr, pol, e.Status, fmt.Sprintf("%d", e.CPUs),
 				humanBytes(e.Memory), humanBytes(e.Disk), addr, runtime)
 			return
 		}
@@ -218,7 +236,7 @@ func cmdLs(args []string) error {
 			mem = fmt.Sprintf("%dGiB", m.Memory)
 			disk = fmt.Sprintf("%dGiB", m.Disk)
 		}
-		fmt.Printf(rowFmt, name, managedStr, "Created", cpu, mem, disk, "-", "-")
+		fmt.Printf(rowFmt, name, managedStr, pol, "Created", cpu, mem, disk, "-", "-")
 	}
 
 	shown := 0
@@ -265,11 +283,15 @@ func cmdCreate(args []string) error {
 	memory := fs.Int("memory", 4, "memory in GiB")
 	disk := fs.Int("disk", 20, "disk in GiB")
 	start := fs.Bool("start", false, "also start the profile after creation")
+	importDir := fs.String("import-dir", "", "copy a host directory into the VM after first boot (implies --start)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected extra arguments: %v", fs.Args())
+	}
+	if *importDir != "" {
+		*start = true
 	}
 
 	existing, err := loadMarker(name)
@@ -291,6 +313,14 @@ func cmdCreate(args []string) error {
 		Memory:            *memory,
 		Disk:              *disk,
 	}
+	if *importDir != "" {
+		abs, err := filepath.Abs(*importDir)
+		if err != nil {
+			return err
+		}
+		m.ImportedFrom = abs
+		m.ImportMode = "dir"
+	}
 	if err := writeMarker(m); err != nil {
 		return fmt.Errorf("write marker: %w", err)
 	}
@@ -304,7 +334,15 @@ func cmdCreate(args []string) error {
 		fmt.Printf("\nTo start: colimander start %s\n", name)
 		return nil
 	}
-	return startProfile(m)
+	if err := startProfile(m); err != nil {
+		return err
+	}
+	if *importDir != "" {
+		if err := importDirIntoVM(name, *importDir); err != nil {
+			return fmt.Errorf("import-dir: %w", err)
+		}
+	}
+	return nil
 }
 
 // emptyMountPath returns a per-profile throwaway directory that we mount
@@ -356,7 +394,63 @@ func startProfile(m *marker) error {
 		m.Name, m.CPU, m.Memory, m.Disk)
 	// The --mount with our empty dir is the trick that suppresses Colima's
 	// $HOME and /tmp/colima-<profile> defaults at the lima.yaml layer.
-	return runColima("start", m.Name, "--mount", emptyMnt+":r")
+	if err := runColima("start", m.Name, "--mount", emptyMnt+":r"); err != nil {
+		return err
+	}
+	if err := syncEtcHosts(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to update /etc/hosts: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  retry manually with: colimander hosts-sync\n")
+	}
+	return nil
+}
+
+// activateBrokerForProfile starts the broker daemon (if not already running)
+// and wires the VM-side config so git/api traffic flows through it. Called
+// from the wizard (with explicit user consent) and from `colimander start`
+// (when a policy file already exists for the profile).
+func activateBrokerForProfile(profile string) error {
+	if err := ensureBrokerRunning(); err != nil {
+		return fmt.Errorf("broker start: %w", err)
+	}
+	if err := wireBrokerInVM(profile); err != nil {
+		return fmt.Errorf("wire broker in VM: %w", err)
+	}
+	return nil
+}
+
+// ensureBrokerRunning starts the broker daemon if it isn't already up.
+// Idempotent — safe to call on every `start`.
+func ensureBrokerRunning() error {
+	if pid, ok := readPid(); ok && processAlive(pid) {
+		return nil
+	}
+	return brokerStartBg(nil)
+}
+
+// wireBrokerInVM configures the VM to route github.com traffic through the
+// broker on the host. Uses `host.lima.internal` so we don't need a separate
+// hostname or /etc/hosts edit inside the VM.
+func wireBrokerInVM(profile string) error {
+	brokerURL := fmt.Sprintf("http://host.lima.internal:%d", defaultBrokerPort)
+	gitConfigVar := fmt.Sprintf("url.%s/git/.insteadOf", brokerURL)
+	profileLine := fmt.Sprintf(`export GITHUB_API_URL=%s/api`, brokerURL)
+
+	steps := [][]string{
+		// Rewrite https://github.com/ → broker /git/ for all git operations.
+		{"git", "config", "--global", gitConfigVar, "https://github.com/"},
+		// Surface GITHUB_API_URL to login shells (octokit / many SDKs respect this).
+		{"sudo", "sh", "-c", fmt.Sprintf("printf '%%s\\n' %q > /etc/profile.d/colimander.sh", profileLine)},
+	}
+	for _, step := range steps {
+		args := append([]string{"ssh", "-p", profile, "--"}, step...)
+		cmd := exec.Command("colima", args...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("vm-wire %v: %w", step, err)
+		}
+	}
+	return nil
 }
 
 func cmdStart(args []string) error {
@@ -379,7 +473,15 @@ func cmdStart(args []string) error {
 	if m == nil {
 		return runColima("start", name)
 	}
-	return startProfile(m)
+	if err := startProfile(m); err != nil {
+		return err
+	}
+	if _, err := os.Stat(policyPath(name)); err == nil {
+		if err := activateBrokerForProfile(name); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		}
+	}
+	return nil
 }
 
 func cmdStop(args []string) error {
@@ -429,6 +531,9 @@ func cmdDestroy(args []string) error {
 	}
 	// Also remove the per-profile empty-mount stub dir, if any.
 	_ = os.RemoveAll(emptyMountPath(name))
+	if err := syncEtcHosts(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to update /etc/hosts: %v\n", err)
+	}
 	fmt.Printf("Destroyed profile %q.\n", name)
 	return nil
 }
@@ -501,18 +606,787 @@ func cmdSSH(args []string) error {
 	return runColima(colimaArgs...)
 }
 
+// vmUserName returns the in-VM user Colima provisions by default: <host-user>.linux.
+func vmUserName() (string, error) {
+	u, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	return u.Username + ".linux", nil
+}
+
+// limaInstanceName returns the lima instance name that backs a colima profile.
+// Colima names the "default" profile's instance just "colima"; all others get
+// the "colima-" prefix.
+func limaInstanceName(profile string) string {
+	if profile == "default" {
+		return "colima"
+	}
+	return "colima-" + profile
+}
+
+// ------------------------------ interactive prompts -------------------------
+
+var stdinReader *bufio.Reader
+
+func stdinR() *bufio.Reader {
+	if stdinReader == nil {
+		stdinReader = bufio.NewReader(os.Stdin)
+	}
+	return stdinReader
+}
+
+func promptLine(label, def string) string {
+	if def != "" {
+		fmt.Printf("%s [%s]: ", label, def)
+	} else {
+		fmt.Printf("%s: ", label)
+	}
+	line, _ := stdinR().ReadString('\n')
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return def
+	}
+	return line
+}
+
+func promptInt(label string, def int) int {
+	for {
+		s := promptLine(label, fmt.Sprintf("%d", def))
+		var v int
+		if _, err := fmt.Sscanf(s, "%d", &v); err == nil && v > 0 {
+			return v
+		}
+		fmt.Println("  (please enter a positive integer)")
+	}
+}
+
+func promptYesNo(label string, def bool) bool {
+	suffix := "y/N"
+	if def {
+		suffix = "Y/n"
+	}
+	for {
+		fmt.Printf("%s [%s]: ", label, suffix)
+		line, _ := stdinR().ReadString('\n')
+		s := strings.ToLower(strings.TrimSpace(line))
+		if s == "" {
+			return def
+		}
+		switch s {
+		case "y", "yes":
+			return true
+		case "n", "no":
+			return false
+		}
+		fmt.Println("  (please answer y or n)")
+	}
+}
+
+func expandHome(p string) string {
+	if !strings.HasPrefix(p, "~") {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p
+	}
+	return filepath.Join(home, strings.TrimPrefix(p, "~"))
+}
+
+// ------------------------------ setup wizard --------------------------------
+
+type depSpec struct {
+	bin         string
+	versionFlag string
+	install     string
+}
+
+var requiredDeps = []depSpec{
+	{"colima", "version", "brew install colima"},
+	{"limactl", "--version", "brew install lima"},
+	{"docker", "--version", "comes with colima; if missing, brew install docker"},
+	{"git", "--version", "preinstalled on macOS; otherwise brew install git"},
+}
+
+func checkDeps() error {
+	fmt.Println("Checking dependencies:")
+	missing := 0
+	for _, d := range requiredDeps {
+		path, err := exec.LookPath(d.bin)
+		if err != nil {
+			fmt.Printf("  %-10s missing  —  install with: %s\n", d.bin, d.install)
+			missing++
+			continue
+		}
+		ver := ""
+		if out, err := exec.Command(path, d.versionFlag).Output(); err == nil {
+			ver = strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+		}
+		fmt.Printf("  %-10s %s  (%s)\n", d.bin, path, ver)
+	}
+	if missing > 0 {
+		return fmt.Errorf("%d dependency missing; install and re-run `colimander setup`", missing)
+	}
+	return nil
+}
+
+var profileNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,30}$`)
+
+func validateProfileName(name string) error {
+	if !profileNameRE.MatchString(name) {
+		return fmt.Errorf("name must start with a letter/digit and be 1-31 lowercase chars, digits, or hyphens")
+	}
+	return nil
+}
+
+func ensureNameAvailable(name string) error {
+	if m, _ := loadMarker(name); m != nil {
+		return fmt.Errorf("profile %q already exists (marker at %s)", name, markerPath(name))
+	}
+	if _, err := os.Stat(colimaProfileDir(name)); err == nil {
+		return fmt.Errorf("colima profile dir %q exists; pick another name", colimaProfileDir(name))
+	}
+	return nil
+}
+
+func cmdSetup(args []string) error {
+	fs := flag.NewFlagSet("setup", flag.ExitOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("setup takes no arguments")
+	}
+
+	fmt.Println()
+	fmt.Println("Colimander setup — create a new isolated project environment.")
+	fmt.Println()
+
+	if err := checkDeps(); err != nil {
+		return err
+	}
+	fmt.Println()
+
+	var name string
+	for {
+		name = promptLine("Project name", "")
+		if name == "" {
+			fmt.Println("  (name is required)")
+			continue
+		}
+		if err := validateProfileName(name); err != nil {
+			fmt.Printf("  (%s)\n", err)
+			continue
+		}
+		if err := ensureNameAvailable(name); err != nil {
+			fmt.Printf("  (%s)\n", err)
+			continue
+		}
+		break
+	}
+	fmt.Println()
+
+	cpu := promptInt("CPU cores", 2)
+	memory := promptInt("Memory (GiB)", 4)
+	disk := promptInt("Disk (GiB)", 20)
+	fmt.Println()
+
+	importPath := ""
+	if promptYesNo("Import an existing directory into the VM?", false) {
+		for {
+			p := promptLine("  Path to import (e.g. ~/code/myproj)", "")
+			if p == "" {
+				fmt.Println("  (path is required)")
+				continue
+			}
+			abs, err := filepath.Abs(expandHome(p))
+			if err != nil {
+				fmt.Printf("  (%s)\n", err)
+				continue
+			}
+			info, err := os.Stat(abs)
+			if err != nil || !info.IsDir() {
+				fmt.Printf("  (%s is not a directory)\n", abs)
+				continue
+			}
+			importPath = abs
+			break
+		}
+	}
+	fmt.Println()
+
+	policy, err := promptForPolicy()
+	if err != nil {
+		return err
+	}
+	fmt.Println()
+
+	startBroker := promptYesNo("Start the credential broker now? (required for VM→GitHub traffic; auto-started on subsequent `colimander start` either way)", true)
+	fmt.Println()
+
+	fmt.Println("About to create:")
+	fmt.Printf("  Profile:        %s\n", name)
+	fmt.Printf("  Resources:      %d CPU / %d GiB RAM / %d GiB disk\n", cpu, memory, disk)
+	if importPath != "" {
+		fmt.Printf("  Import:         %s\n", importPath)
+	}
+	fmt.Printf("  Allowed owners: %s\n", strings.Join(policy.AllowedOwners, ", "))
+	fmt.Printf("  Deny rules:     %d (default destructive-op deny list)\n", len(policy.DenyRules))
+	if startBroker {
+		fmt.Println("  Broker:         start now + wire VM-side git/api routing")
+	} else {
+		fmt.Println("  Broker:         skip for now (next `colimander start` will activate it)")
+	}
+	fmt.Println()
+	if !promptYesNo("Proceed?", true) {
+		fmt.Println("Aborted. Nothing created.")
+		return nil
+	}
+	fmt.Println()
+
+	m := &marker{
+		Name:              name,
+		CreatedAt:         time.Now().UTC(),
+		ColimanderVersion: version,
+		CPU:               cpu,
+		Memory:            memory,
+		Disk:              disk,
+	}
+	if importPath != "" {
+		m.ImportedFrom = importPath
+		m.ImportMode = "dir"
+	}
+	if err := writeMarker(m); err != nil {
+		return err
+	}
+	if err := writeColimaConfig(m); err != nil {
+		return err
+	}
+	if err := savePolicy(name, policy); err != nil {
+		return fmt.Errorf("save policy: %w", err)
+	}
+	if err := startProfile(m); err != nil {
+		return err
+	}
+	if importPath != "" {
+		if err := importDirIntoVM(name, importPath); err != nil {
+			return fmt.Errorf("import-dir: %w", err)
+		}
+	}
+	if startBroker {
+		if err := activateBrokerForProfile(name); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		}
+	}
+
+	fmt.Println()
+	fmt.Println("Profile ready. Next steps:")
+	fmt.Printf("  - Edit over SSH (in your editor's remote-host picker):  lima-%s\n", limaInstanceName(name))
+	if importPath != "" {
+		vmUser, _ := vmUserName()
+		fmt.Printf("    Source landed at /home/%s/%s inside the VM.\n", vmUser, filepath.Base(importPath))
+	}
+	fmt.Printf("  - Browser:       http://%s.local:<port>\n", name)
+	fmt.Printf("  - List ports:    colimander ports %s\n", name)
+	fmt.Printf("  - SSH shell:     colimander ssh %s\n", name)
+	fmt.Printf("  - Stop:          colimander stop %s\n", name)
+	fmt.Println()
+	return nil
+}
+
+// ------------------------------ policy subcommand --------------------------
+
+func cmdPolicy(args []string) error {
+	if len(args) < 1 {
+		return errors.New("usage: colimander policy {default [--owner NAME...]|show <profile>}")
+	}
+	switch args[0] {
+	case "default":
+		fs := flag.NewFlagSet("policy default", flag.ExitOnError)
+		var owners multiFlag
+		fs.Var(&owners, "owner", "allowed owner (repeat for multiple)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if len(owners) == 0 {
+			if u, err := ghCurrentLogin(); err == nil {
+				owners = []string{u}
+			}
+		}
+		p := &Policy{Version: policyVersion, AllowedOwners: owners, DenyRules: defaultDenyRules()}
+		data, err := json.MarshalIndent(p, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+		return nil
+	case "show":
+		if len(args) < 2 {
+			return errors.New("usage: colimander policy show <profile>")
+		}
+		p, err := loadPolicy(args[1])
+		if err != nil {
+			return err
+		}
+		data, err := json.MarshalIndent(p, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+		return nil
+	default:
+		return fmt.Errorf("unknown policy subcommand %q", args[0])
+	}
+}
+
+type multiFlag []string
+
+func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
+func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
+
+// ------------------------------ policy prompts ------------------------------
+
+func ghCurrentLogin() (string, error) {
+	out, err := exec.Command("gh", "api", "user", "--jq", ".login").Output()
+	if err != nil {
+		return "", fmt.Errorf("gh api user: %w (is `gh auth status` healthy?)", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func ghOrgs() ([]string, error) {
+	out, err := exec.Command("gh", "api", "user/orgs", "--paginate", "--jq", ".[].login").Output()
+	if err != nil {
+		return nil, fmt.Errorf("gh api user/orgs: %w", err)
+	}
+	var orgs []string
+	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			orgs = append(orgs, l)
+		}
+	}
+	return orgs, nil
+}
+
+func promptForPolicy() (*Policy, error) {
+	fmt.Println("Credential broker policy:")
+	user, err := ghCurrentLogin()
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("  Your GitHub login (%s) is always allowed.\n", user)
+
+	orgs, err := ghOrgs()
+	if err != nil {
+		fmt.Printf("  (couldn't list orgs: %v — continuing with just your user)\n", err)
+	}
+	selected := []string{user}
+	if len(orgs) > 0 {
+		fmt.Println("  Available organizations:")
+		for i, o := range orgs {
+			fmt.Printf("    [%d] %s\n", i+1, o)
+		}
+		fmt.Println("  Enter space-separated numbers of orgs to allow this VM to touch.")
+		fmt.Println("  (Empty = just your user; `all` = all orgs above.)")
+		line := promptLine("  Selection", "")
+		picked := pickOrgs(line, orgs)
+		selected = append(selected, picked...)
+	} else {
+		fmt.Println("  (no organizations found via gh.)")
+	}
+
+	rules := defaultDenyRules()
+	fmt.Printf("\n  %d destructive operations will be denied by default. Show the list? ", len(rules))
+	if promptYesNoInline(false) {
+		for _, r := range rules {
+			switch r.Kind {
+			case "api":
+				fmt.Printf("    - %-30s %s %s\n", r.ID, r.Method, r.PathGlob)
+			case "git-delete-ref":
+				fmt.Printf("    - %-30s git push delete %s\n", r.ID, r.RefGlob)
+			}
+		}
+	}
+	fmt.Println("  Edit later by hand at ~/.colima/<profile>/policy.json.")
+
+	return &Policy{
+		Version:       policyVersion,
+		AllowedOwners: selected,
+		DenyRules:     rules,
+	}, nil
+}
+
+func pickOrgs(line string, orgs []string) []string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil
+	}
+	if strings.EqualFold(line, "all") {
+		out := make([]string, len(orgs))
+		copy(out, orgs)
+		return out
+	}
+	seen := map[int]bool{}
+	var out []string
+	for _, tok := range strings.Fields(line) {
+		var i int
+		if _, err := fmt.Sscanf(tok, "%d", &i); err != nil {
+			continue
+		}
+		if i < 1 || i > len(orgs) || seen[i] {
+			continue
+		}
+		seen[i] = true
+		out = append(out, orgs[i-1])
+	}
+	return out
+}
+
+// promptYesNoInline is a [y/N] / [Y/n] prompt that uses an empty label so it
+// reads naturally at the tail of another printed line.
+func promptYesNoInline(def bool) bool {
+	suffix := "[y/N]"
+	if def {
+		suffix = "[Y/n]"
+	}
+	for {
+		fmt.Printf("%s: ", suffix)
+		line, _ := stdinR().ReadString('\n')
+		s := strings.ToLower(strings.TrimSpace(line))
+		if s == "" {
+			return def
+		}
+		switch s {
+		case "y", "yes":
+			return true
+		case "n", "no":
+			return false
+		}
+		fmt.Println("  (please answer y or n)")
+	}
+}
+
+// ------------------------------ init ----------------------------------------
+
+const sshIncludeLine = "Include ~/.lima/*/ssh.config"
+
+func cmdInit(args []string) error {
+	fs := flag.NewFlagSet("init", flag.ExitOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("init takes no arguments")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		return err
+	}
+	configPath := filepath.Join(sshDir, "config")
+	existing, err := os.ReadFile(configPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, line := range strings.Split(string(existing), "\n") {
+		if strings.TrimSpace(line) == sshIncludeLine {
+			fmt.Printf("~/.ssh/config already includes Lima profiles. Nothing to do.\n")
+			return nil
+		}
+	}
+	block := fmt.Sprintf("\n# Added by colimander: makes Lima/Colima profiles visible to editors via SSH-remote.\n%s\n", sshIncludeLine)
+	f, err := os.OpenFile(configPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.WriteString(block); err != nil {
+		return err
+	}
+	fmt.Printf("Added %q to %s.\n", sshIncludeLine, configPath)
+	fmt.Println("Your editor's SSH-remote picker should now show lima-colima-<profile> hosts.")
+	return nil
+}
+
+// ------------------------------ /etc/hosts ----------------------------------
+
+const (
+	hostsFile        = "/etc/hosts"
+	hostsBeginMarker = "# BEGIN colimander (managed automatically; do not edit between markers)"
+	hostsEndMarker   = "# END colimander"
+)
+
+// desiredHostsBlock returns the colimander-managed block to splice into
+// /etc/hosts, or the empty string if no managed profiles currently have an
+// address. The trailing newline is always included when non-empty.
+func desiredHostsBlock() (string, error) {
+	managed, err := listManagedNames()
+	if err != nil {
+		return "", err
+	}
+	coli, err := listProfiles()
+	if err != nil {
+		return "", err
+	}
+	addr := map[string]string{}
+	for _, e := range coli {
+		if e.Address != "" {
+			addr[e.Name] = e.Address
+		}
+	}
+	var rows []string
+	for _, n := range managed {
+		ip, ok := addr[n]
+		if !ok {
+			continue
+		}
+		rows = append(rows, fmt.Sprintf("%s\t%s.local", ip, n))
+	}
+	if len(rows) == 0 {
+		return "", nil
+	}
+	return hostsBeginMarker + "\n" + strings.Join(rows, "\n") + "\n" + hostsEndMarker + "\n", nil
+}
+
+// splitHostsBlock locates the existing colimander block (if any) and returns
+// the surrounding before/after slices.
+func splitHostsBlock(contents string) (before, block, after string) {
+	bi := strings.Index(contents, hostsBeginMarker)
+	if bi < 0 {
+		return contents, "", ""
+	}
+	ei := strings.Index(contents[bi:], hostsEndMarker)
+	if ei < 0 {
+		return contents, "", ""
+	}
+	ei += bi + len(hostsEndMarker)
+	if ei < len(contents) && contents[ei] == '\n' {
+		ei++
+	}
+	return contents[:bi], contents[bi:ei], contents[ei:]
+}
+
+// syncEtcHosts rewrites the colimander-managed block in /etc/hosts to reflect
+// the currently running managed profiles. It only invokes sudo when the file
+// actually needs changing.
+func syncEtcHosts() error {
+	desired, err := desiredHostsBlock()
+	if err != nil {
+		return err
+	}
+	current, err := os.ReadFile(hostsFile)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", hostsFile, err)
+	}
+	before, _, after := splitHostsBlock(string(current))
+	var next string
+	if desired == "" {
+		next = before + after
+	} else {
+		b := before
+		if b != "" && !strings.HasSuffix(b, "\n") {
+			b += "\n"
+		}
+		next = b + desired + after
+	}
+	if next == string(current) {
+		return nil
+	}
+	tmp, err := os.CreateTemp("", "colimander-hosts-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.WriteString(next); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, "Updating /etc/hosts (sudo prompt may follow)...")
+	cmd := exec.Command("sudo", "cp", tmpPath, hostsFile)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func cmdHostsSync(args []string) error {
+	fs := flag.NewFlagSet("hosts-sync", flag.ExitOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("hosts-sync takes no arguments")
+	}
+	return syncEtcHosts()
+}
+
+// ------------------------------ source import -------------------------------
+
+// limaHome returns the directory where colima keeps its bundled lima
+// instances. Colima 0.8+ puts them under ~/.colima/_lima/ instead of the
+// default ~/.lima/, so any limactl invocation needs LIMA_HOME pointed there.
+func limaHome() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".colima", "_lima")
+}
+
+// runLimactl runs `limactl <args>` with the colima-managed LIMA_HOME so
+// instance names like colima-<profile> resolve correctly.
+func runLimactl(args ...string) error {
+	cmd := exec.Command("limactl", args...)
+	cmd.Env = append(os.Environ(), "LIMA_HOME="+limaHome())
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// importDirIntoVM copies a host directory into the VM at /home/<vmuser>/<basename>.
+// Caller is responsible for ensuring the VM is running.
+func importDirIntoVM(profile, srcDir string) error {
+	abs, err := filepath.Abs(srcDir)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return fmt.Errorf("import-dir %q: %w", abs, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("import-dir %q is not a directory", abs)
+	}
+	vmUser, err := vmUserName()
+	if err != nil {
+		return err
+	}
+	instance := limaInstanceName(profile)
+	dest := fmt.Sprintf("%s:/home/%s/", instance, vmUser)
+	fmt.Printf("Importing %s into %s%s ...\n", abs, dest, filepath.Base(abs))
+	return runLimactl("cp", "-r", abs, dest)
+}
+
+// ------------------------------ ports ---------------------------------------
+
+// portsLineRE matches `ss -Hltn` output. We pull the local-address column (col 4)
+// and the optional `users:(("name"...` process column. Example:
+//
+//	LISTEN 0      511                          *:3000              *:*    users:(("node",pid=123,fd=10))
+var (
+	ssLineRE = regexp.MustCompile(`^LISTEN\s+\S+\s+\S+\s+(\S+)\s+\S+(?:\s+(.*))?$`)
+	ssProcRE = regexp.MustCompile(`users:\(\("([^"]+)"`)
+)
+
+type listenEntry struct {
+	port int
+	proc string
+}
+
+func parseSSOutput(out string) []listenEntry {
+	var entries []listenEntry
+	seen := map[int]string{}
+	scanner := bufio.NewScanner(strings.NewReader(out))
+	for scanner.Scan() {
+		line := scanner.Text()
+		m := ssLineRE.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		local := m[1]
+		i := strings.LastIndex(local, ":")
+		if i < 0 {
+			continue
+		}
+		var port int
+		if _, err := fmt.Sscanf(local[i+1:], "%d", &port); err != nil {
+			continue
+		}
+		proc := ""
+		if len(m) >= 3 {
+			if pm := ssProcRE.FindStringSubmatch(m[2]); pm != nil {
+				proc = pm[1]
+			}
+		}
+		if existing, ok := seen[port]; ok {
+			if existing == "" && proc != "" {
+				seen[port] = proc
+			}
+			continue
+		}
+		seen[port] = proc
+		entries = append(entries, listenEntry{port: port, proc: proc})
+	}
+	// Backfill any updated proc names from the seen map.
+	for i := range entries {
+		if seen[entries[i].port] != "" {
+			entries[i].proc = seen[entries[i].port]
+		}
+	}
+	return entries
+}
+
+func cmdPorts(args []string) error {
+	if len(args) < 1 || strings.HasPrefix(args[0], "-") {
+		return errors.New("usage: colimander ports <name>")
+	}
+	name := args[0]
+	fs := flag.NewFlagSet("ports", flag.ExitOnError)
+	forceUnmanaged := fs.Bool("force-unmanaged", false, "operate on a profile not managed by Colimander")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected extra arguments: %v", fs.Args())
+	}
+	if _, err := requireManaged(name, *forceUnmanaged); err != nil {
+		return err
+	}
+	out, err := exec.Command("colima", "ssh", "-p", name, "--", "sudo", "ss", "-Hltnp").Output()
+	if err != nil {
+		return fmt.Errorf("listing ports via ssh: %w", err)
+	}
+	entries := parseSSOutput(string(out))
+	if len(entries) == 0 {
+		fmt.Println("(no TCP listeners inside the VM)")
+		return nil
+	}
+	const row = "%-6s %-20s %s\n"
+	fmt.Printf(row, "PORT", "PROCESS", "URL")
+	for _, e := range entries {
+		proc := e.proc
+		if proc == "" {
+			proc = "-"
+		}
+		fmt.Printf(row, fmt.Sprintf("%d", e.port), proc, fmt.Sprintf("http://%s.local:%d", name, e.port))
+	}
+	return nil
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr, `Colimander — safe per-project Colima profile management.
 
 Commands:
+  setup                               interactive wizard: deps check, name, specs, optional import
+  init                                add the Lima SSH include to ~/.ssh/config (one-time setup)
   ls [--all]                          list Colimander-managed profiles (--all shows everything)
-  create <name> [--cpu N] [--memory G] [--disk G] [--start]
-                                      create a new profile (marker only; --start to also start it)
+  create <name> [--cpu N] [--memory G] [--disk G] [--start] [--import-dir PATH]
+                                      create a new profile; --import-dir copies a host directory
+                                      into the VM after first boot (implies --start)
   start <name>                        start a Colimander-managed profile with its stored resources
   stop <name>                         stop a profile
   destroy <name> --yes                permanently delete a profile (VM + marker + dir)
   ssh <name> [-- cmd args...]         SSH into a profile (or run a command in it)
   status <name>                       show detailed status for a single profile
+  ports <name>                        list TCP listeners inside the VM with host-side URLs
+  hosts-sync                          rewrite the colimander block in /etc/hosts (recovery)
+  broker {run|start|stop|status|tail} run the credential broker (proxy for github.com / api.github.com)
+  policy {default|show <name>}        emit default policy JSON, or show a profile's current policy
   version                             print version
 
 All mutating commands refuse profiles without a Colimander marker unless
@@ -527,6 +1401,10 @@ func main() {
 	}
 	var err error
 	switch os.Args[1] {
+	case "setup":
+		err = cmdSetup(os.Args[2:])
+	case "init":
+		err = cmdInit(os.Args[2:])
 	case "ls", "list":
 		err = cmdLs(os.Args[2:])
 	case "create":
@@ -541,6 +1419,14 @@ func main() {
 		err = cmdSSH(os.Args[2:])
 	case "status":
 		err = cmdStatus(os.Args[2:])
+	case "ports":
+		err = cmdPorts(os.Args[2:])
+	case "hosts-sync":
+		err = cmdHostsSync(os.Args[2:])
+	case "broker":
+		err = cmdBroker(os.Args[2:])
+	case "policy":
+		err = cmdPolicy(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("colimander", version)
 	case "help", "--help", "-h":
