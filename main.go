@@ -739,6 +739,16 @@ func cmdSetup(args []string) error {
 	for _, o := range orgs {
 		orgOpts = append(orgOpts, huh.NewOption(o, o))
 	}
+	allRules := defaultDenyRules()
+	denyOpts := make([]huh.Option[string], 0, len(allRules))
+	for _, r := range allRules {
+		denyOpts = append(denyOpts, huh.NewOption(denyRuleLabel(r), r.ID))
+	}
+	// Pre-select all rules so the default behavior is "enforce everything".
+	pickedDenyIDs := make([]string, 0, len(allRules))
+	for _, r := range allRules {
+		pickedDenyIDs = append(pickedDenyIDs, r.ID)
+	}
 
 	form := huh.NewForm(
 		huh.NewGroup(
@@ -788,6 +798,14 @@ func cmdSetup(args []string) error {
 				Value(&pickedOrgs),
 		).WithHideFunc(func() bool { return len(orgs) == 0 }),
 		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Broker deny rules — destructive operations to block").
+				Description("All pre-selected. Uncheck any you don't want enforced. (Editable later at ~/.colima/<name>/policy.json.)").
+				Options(denyOpts...).
+				Value(&pickedDenyIDs).
+				Height(15),
+		),
+		huh.NewGroup(
 			huh.NewConfirm().
 				Title("Start the credential broker now?").
 				Description("Required for VM→GitHub traffic. If you skip, the next `colimander start` will activate it.").
@@ -818,7 +836,7 @@ func cmdSetup(args []string) error {
 	policy := &Policy{
 		Version:       policyVersion,
 		AllowedOwners: append([]string{ghUser}, pickedOrgs...),
-		DenyRules:     defaultDenyRules(),
+		DenyRules:     filterRulesByID(allRules, pickedDenyIDs),
 	}
 
 	fmt.Println("About to create:")
@@ -835,7 +853,7 @@ func cmdSetup(args []string) error {
 		fmt.Printf("  Packages:       %s\n", strings.Join(labels, ", "))
 	}
 	fmt.Printf("  Allowed owners: %s\n", strings.Join(policy.AllowedOwners, ", "))
-	fmt.Printf("  Deny rules:     %d (default destructive-op deny list)\n", len(policy.DenyRules))
+	fmt.Printf("  Deny rules:     %d / %d enforced\n", len(policy.DenyRules), len(allRules))
 	if startBroker {
 		fmt.Println("  Broker:         start now + wire VM-side git/api routing")
 	} else {
@@ -947,6 +965,44 @@ func validateImportPath(s string) error {
 		return fmt.Errorf("%s is not a directory", abs)
 	}
 	return nil
+}
+
+// denyRuleLabel renders a deny rule as one line suitable for huh's MultiSelect.
+// API rules show as "METHOD path-glob — reason"; git rules show as "git push
+// delete <ref> — reason". Truncated at ~110 chars to keep the list scannable.
+func denyRuleLabel(r DenyRule) string {
+	var head string
+	switch r.Kind {
+	case "api":
+		head = fmt.Sprintf("%-6s %s", r.Method, r.PathGlob)
+	case "git-delete-ref":
+		head = "git push delete " + r.RefGlob
+	default:
+		head = r.ID
+	}
+	reason := r.Reason
+	if reason == "" {
+		reason = r.ID
+	}
+	label := head + "  —  " + reason
+	if len(label) > 110 {
+		label = label[:107] + "..."
+	}
+	return label
+}
+
+func filterRulesByID(all []DenyRule, ids []string) []DenyRule {
+	keep := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		keep[id] = true
+	}
+	out := make([]DenyRule, 0, len(ids))
+	for _, r := range all {
+		if keep[r.ID] {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func pkgsFromIDs(ids []string) []vmPackage {
