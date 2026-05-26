@@ -11,10 +11,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/charmbracelet/huh"
 )
 
 type vmPackage struct {
@@ -57,40 +60,30 @@ echo "  PostgreSQL 16 listening; connect locally as: sudo -u postgres psql"`,
 	},
 }
 
+// promptForPackages is the standalone (non-wizard) huh prompt used by
+// `colimander packages <name>`. The setup wizard inlines the same options
+// into its big form instead of calling this.
 func promptForPackages() []vmPackage {
-	fmt.Println("Optional packages to install in the VM:")
-	for i, p := range availablePackages {
-		fmt.Printf("  [%d] %-14s %s\n", i+1, p.Label, p.Description)
+	opts := make([]huh.Option[string], 0, len(availablePackages))
+	for _, p := range availablePackages {
+		opts = append(opts, huh.NewOption(fmt.Sprintf("%s — %s", p.Label, p.Description), p.ID))
 	}
-	fmt.Println("  Enter space-separated numbers to install. Blank = skip; `all` = install all.")
-	line := promptLine("  Selection", "")
-	return pickPackages(line, availablePackages)
-}
-
-func pickPackages(line string, available []vmPackage) []vmPackage {
-	line = strings.TrimSpace(line)
-	if line == "" {
+	var picked []string
+	err := huh.NewForm(huh.NewGroup(
+		huh.NewMultiSelect[string]().
+			Title("Packages to install in the VM").
+			Description("space toggles, enter confirms; leave blank to skip.").
+			Options(opts...).
+			Value(&picked),
+	)).Run()
+	if err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			return nil
+		}
+		fmt.Fprintln(os.Stderr, "package selection:", err)
 		return nil
 	}
-	if strings.EqualFold(line, "all") {
-		out := make([]vmPackage, len(available))
-		copy(out, available)
-		return out
-	}
-	seen := map[int]bool{}
-	var out []vmPackage
-	for _, tok := range strings.Fields(line) {
-		var i int
-		if _, err := fmt.Sscanf(tok, "%d", &i); err != nil {
-			continue
-		}
-		if i < 1 || i > len(available) || seen[i] {
-			continue
-		}
-		seen[i] = true
-		out = append(out, available[i-1])
-	}
-	return out
+	return pkgsFromIDs(picked)
 }
 
 // cmdPackages is the standalone `colimander packages <profile>` entrypoint,

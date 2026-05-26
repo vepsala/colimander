@@ -22,6 +22,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/huh"
 )
 
 const (
@@ -627,64 +629,6 @@ func limaInstanceName(profile string) string {
 	return "colima-" + profile
 }
 
-// ------------------------------ interactive prompts -------------------------
-
-var stdinReader *bufio.Reader
-
-func stdinR() *bufio.Reader {
-	if stdinReader == nil {
-		stdinReader = bufio.NewReader(os.Stdin)
-	}
-	return stdinReader
-}
-
-func promptLine(label, def string) string {
-	if def != "" {
-		fmt.Printf("%s [%s]: ", label, def)
-	} else {
-		fmt.Printf("%s: ", label)
-	}
-	line, _ := stdinR().ReadString('\n')
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return def
-	}
-	return line
-}
-
-func promptInt(label string, def int) int {
-	for {
-		s := promptLine(label, fmt.Sprintf("%d", def))
-		var v int
-		if _, err := fmt.Sscanf(s, "%d", &v); err == nil && v > 0 {
-			return v
-		}
-		fmt.Println("  (please enter a positive integer)")
-	}
-}
-
-func promptYesNo(label string, def bool) bool {
-	suffix := "y/N"
-	if def {
-		suffix = "Y/n"
-	}
-	for {
-		fmt.Printf("%s [%s]: ", label, suffix)
-		line, _ := stdinR().ReadString('\n')
-		s := strings.ToLower(strings.TrimSpace(line))
-		if s == "" {
-			return def
-		}
-		switch s {
-		case "y", "yes":
-			return true
-		case "n", "no":
-			return false
-		}
-		fmt.Println("  (please answer y or n)")
-	}
-}
-
 func expandHome(p string) string {
 	if !strings.HasPrefix(p, "~") {
 		return p
@@ -770,65 +714,112 @@ func cmdSetup(args []string) error {
 	}
 	fmt.Println()
 
-	var name string
-	for {
-		name = promptLine("Project name", "")
-		if name == "" {
-			fmt.Println("  (name is required)")
-			continue
-		}
-		if err := validateProfileName(name); err != nil {
-			fmt.Printf("  (%s)\n", err)
-			continue
-		}
-		if err := ensureNameAvailable(name); err != nil {
-			fmt.Printf("  (%s)\n", err)
-			continue
-		}
-		break
-	}
-	fmt.Println()
-
-	cpu := promptInt("CPU cores", 2)
-	memory := promptInt("Memory (GiB)", 4)
-	disk := promptInt("Disk (GiB)", 20)
-	fmt.Println()
-
-	importPath := ""
-	if promptYesNo("Import an existing directory into the VM?", false) {
-		for {
-			p := promptLine("  Path to import (e.g. ~/code/myproj)", "")
-			if p == "" {
-				fmt.Println("  (path is required)")
-				continue
-			}
-			abs, err := filepath.Abs(expandHome(p))
-			if err != nil {
-				fmt.Printf("  (%s)\n", err)
-				continue
-			}
-			info, err := os.Stat(abs)
-			if err != nil || !info.IsDir() {
-				fmt.Printf("  (%s is not a directory)\n", abs)
-				continue
-			}
-			importPath = abs
-			break
-		}
-	}
-	fmt.Println()
-
-	pkgs := promptForPackages()
-	fmt.Println()
-
-	policy, err := promptForPolicy()
+	ghUser, err := ghCurrentLogin()
 	if err != nil {
 		return err
 	}
-	fmt.Println()
+	orgs, _ := ghOrgs()
 
-	startBroker := promptYesNo("Start the credential broker now? (required for VM→GitHub traffic; auto-started on subsequent `colimander start` either way)", true)
-	fmt.Println()
+	// Form state — all populated by huh.NewForm below.
+	var name string
+	cpuStr := "2"
+	memStr := "4"
+	diskStr := "20"
+	doImport := false
+	importPath := ""
+	var pickedPkgIDs []string
+	var pickedOrgs []string
+	startBroker := true
+
+	pkgOpts := make([]huh.Option[string], 0, len(availablePackages))
+	for _, p := range availablePackages {
+		pkgOpts = append(pkgOpts, huh.NewOption(fmt.Sprintf("%s — %s", p.Label, p.Description), p.ID))
+	}
+	orgOpts := make([]huh.Option[string], 0, len(orgs))
+	for _, o := range orgs {
+		orgOpts = append(orgOpts, huh.NewOption(o, o))
+	}
+
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Project name").
+				Description("Used for the VM, hostname, and editor SSH alias.").
+				Value(&name).
+				Validate(func(v string) error {
+					if err := validateProfileName(v); err != nil {
+						return err
+					}
+					return ensureNameAvailable(v)
+				}),
+		),
+		huh.NewGroup(
+			huh.NewInput().Title("CPU cores").Value(&cpuStr).Validate(validatePositiveInt),
+			huh.NewInput().Title("Memory (GiB)").Value(&memStr).Validate(validatePositiveInt),
+			huh.NewInput().Title("Disk (GiB)").Value(&diskStr).Validate(validatePositiveInt),
+		),
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Import an existing directory into the VM?").
+				Description("One-shot copy at create time. After this, the VM is the source of truth — host copy is no longer touched.").
+				Affirmative("Yes, import a dir").
+				Negative("No, start fresh").
+				Value(&doImport),
+		),
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Path to import").
+				Description("e.g. ~/code/myproject").
+				Value(&importPath).
+				Validate(validateImportPath),
+		).WithHideFunc(func() bool { return !doImport }),
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Packages to install in the VM").
+				Description("space toggles, enter confirms; leave blank to skip.").
+				Options(pkgOpts...).
+				Value(&pickedPkgIDs),
+		),
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title(fmt.Sprintf("GitHub orgs this VM may touch (your user %q is always allowed)", ghUser)).
+				Description("Broker denies traffic to owners not on this list.").
+				Options(orgOpts...).
+				Value(&pickedOrgs),
+		).WithHideFunc(func() bool { return len(orgs) == 0 }),
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Start the credential broker now?").
+				Description("Required for VM→GitHub traffic. If you skip, the next `colimander start` will activate it.").
+				Affirmative("Start").
+				Negative("Skip for now").
+				Value(&startBroker),
+		),
+	)
+	if err := form.Run(); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			fmt.Println("Aborted. Nothing created.")
+			return nil
+		}
+		return err
+	}
+
+	cpu, _ := strconv.Atoi(cpuStr)
+	memory, _ := strconv.Atoi(memStr)
+	disk, _ := strconv.Atoi(diskStr)
+	if doImport {
+		if abs, err := filepath.Abs(expandHome(importPath)); err == nil {
+			importPath = abs
+		}
+	} else {
+		importPath = ""
+	}
+	pkgs := pkgsFromIDs(pickedPkgIDs)
+	policy := &Policy{
+		Version:       policyVersion,
+		AllowedOwners: append([]string{ghUser}, pickedOrgs...),
+		DenyRules:     defaultDenyRules(),
+	}
 
 	fmt.Println("About to create:")
 	fmt.Printf("  Profile:        %s\n", name)
@@ -848,10 +839,24 @@ func cmdSetup(args []string) error {
 	if startBroker {
 		fmt.Println("  Broker:         start now + wire VM-side git/api routing")
 	} else {
-		fmt.Println("  Broker:         skip for now (next `colimander start` will activate it)")
+		fmt.Println("  Broker:         skip (will activate on next `colimander start`)")
 	}
 	fmt.Println()
-	if !promptYesNo("Proceed?", true) {
+
+	var proceed bool
+	if err := huh.NewConfirm().
+		Title("Proceed?").
+		Affirmative("Yes, create").
+		Negative("Cancel").
+		Value(&proceed).
+		Run(); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			fmt.Println("Aborted. Nothing created.")
+			return nil
+		}
+		return err
+	}
+	if !proceed {
 		fmt.Println("Aborted. Nothing created.")
 		return nil
 	}
@@ -908,6 +913,55 @@ func cmdSetup(args []string) error {
 	return nil
 }
 
+// ------------------------------ wizard helpers ------------------------------
+
+func validatePositiveInt(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return fmt.Errorf("required")
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return fmt.Errorf("must be an integer")
+	}
+	if n <= 0 {
+		return fmt.Errorf("must be > 0")
+	}
+	return nil
+}
+
+func validateImportPath(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return fmt.Errorf("required")
+	}
+	abs, err := filepath.Abs(expandHome(s))
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return fmt.Errorf("%s: %w", abs, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", abs)
+	}
+	return nil
+}
+
+func pkgsFromIDs(ids []string) []vmPackage {
+	out := make([]vmPackage, 0, len(ids))
+	for _, id := range ids {
+		for _, p := range availablePackages {
+			if p.ID == id {
+				out = append(out, p)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // ------------------------------ policy subcommand --------------------------
 
 func cmdPolicy(args []string) error {
@@ -958,7 +1012,7 @@ type multiFlag []string
 func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 
-// ------------------------------ policy prompts ------------------------------
+// ------------------------------ gh shellouts -------------------------------
 
 func ghCurrentLogin() (string, error) {
 	out, err := exec.Command("gh", "api", "user", "--jq", ".login").Output()
@@ -980,104 +1034,6 @@ func ghOrgs() ([]string, error) {
 		}
 	}
 	return orgs, nil
-}
-
-func promptForPolicy() (*Policy, error) {
-	fmt.Println("Credential broker policy:")
-	user, err := ghCurrentLogin()
-	if err != nil {
-		return nil, err
-	}
-	fmt.Printf("  Your GitHub login (%s) is always allowed.\n", user)
-
-	orgs, err := ghOrgs()
-	if err != nil {
-		fmt.Printf("  (couldn't list orgs: %v — continuing with just your user)\n", err)
-	}
-	selected := []string{user}
-	if len(orgs) > 0 {
-		fmt.Println("  Available organizations:")
-		for i, o := range orgs {
-			fmt.Printf("    [%d] %s\n", i+1, o)
-		}
-		fmt.Println("  Enter space-separated numbers of orgs to allow this VM to touch.")
-		fmt.Println("  (Empty = just your user; `all` = all orgs above.)")
-		line := promptLine("  Selection", "")
-		picked := pickOrgs(line, orgs)
-		selected = append(selected, picked...)
-	} else {
-		fmt.Println("  (no organizations found via gh.)")
-	}
-
-	rules := defaultDenyRules()
-	fmt.Printf("\n  %d destructive operations will be denied by default. Show the list? ", len(rules))
-	if promptYesNoInline(false) {
-		for _, r := range rules {
-			switch r.Kind {
-			case "api":
-				fmt.Printf("    - %-30s %s %s\n", r.ID, r.Method, r.PathGlob)
-			case "git-delete-ref":
-				fmt.Printf("    - %-30s git push delete %s\n", r.ID, r.RefGlob)
-			}
-		}
-	}
-	fmt.Println("  Edit later by hand at ~/.colima/<profile>/policy.json.")
-
-	return &Policy{
-		Version:       policyVersion,
-		AllowedOwners: selected,
-		DenyRules:     rules,
-	}, nil
-}
-
-func pickOrgs(line string, orgs []string) []string {
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return nil
-	}
-	if strings.EqualFold(line, "all") {
-		out := make([]string, len(orgs))
-		copy(out, orgs)
-		return out
-	}
-	seen := map[int]bool{}
-	var out []string
-	for _, tok := range strings.Fields(line) {
-		var i int
-		if _, err := fmt.Sscanf(tok, "%d", &i); err != nil {
-			continue
-		}
-		if i < 1 || i > len(orgs) || seen[i] {
-			continue
-		}
-		seen[i] = true
-		out = append(out, orgs[i-1])
-	}
-	return out
-}
-
-// promptYesNoInline is a [y/N] / [Y/n] prompt that uses an empty label so it
-// reads naturally at the tail of another printed line.
-func promptYesNoInline(def bool) bool {
-	suffix := "[y/N]"
-	if def {
-		suffix = "[Y/n]"
-	}
-	for {
-		fmt.Printf("%s: ", suffix)
-		line, _ := stdinR().ReadString('\n')
-		s := strings.ToLower(strings.TrimSpace(line))
-		if s == "" {
-			return def
-		}
-		switch s {
-		case "y", "yes":
-			return true
-		case "n", "no":
-			return false
-		}
-		fmt.Println("  (please answer y or n)")
-	}
 }
 
 // ------------------------------ init ----------------------------------------
