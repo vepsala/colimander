@@ -818,6 +818,9 @@ func cmdSetup(args []string) error {
 	}
 	fmt.Println()
 
+	pkgs := promptForPackages()
+	fmt.Println()
+
 	policy, err := promptForPolicy()
 	if err != nil {
 		return err
@@ -832,6 +835,13 @@ func cmdSetup(args []string) error {
 	fmt.Printf("  Resources:      %d CPU / %d GiB RAM / %d GiB disk\n", cpu, memory, disk)
 	if importPath != "" {
 		fmt.Printf("  Import:         %s\n", importPath)
+	}
+	if len(pkgs) > 0 {
+		labels := make([]string, 0, len(pkgs))
+		for _, p := range pkgs {
+			labels = append(labels, p.Label)
+		}
+		fmt.Printf("  Packages:       %s\n", strings.Join(labels, ", "))
 	}
 	fmt.Printf("  Allowed owners: %s\n", strings.Join(policy.AllowedOwners, ", "))
 	fmt.Printf("  Deny rules:     %d (default destructive-op deny list)\n", len(policy.DenyRules))
@@ -881,6 +891,7 @@ func cmdSetup(args []string) error {
 			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 		}
 	}
+	installPackages(name, pkgs)
 
 	fmt.Println()
 	fmt.Println("Profile ready. Next steps:")
@@ -1509,6 +1520,7 @@ Commands:
   hosts-sync                          rewrite the colimander block in /etc/hosts (recovery)
   broker {run|start|stop|status|tail} run the credential broker (proxy for github.com / api.github.com)
   policy {default|show <name>}        emit default policy JSON, or show a profile's current policy
+  packages <name>                     install optional packages (claude-code, opencode, postgres, …) into a profile
   version                             print version
 
 All mutating commands refuse profiles without a Colimander marker unless
@@ -1549,6 +1561,8 @@ func main() {
 		err = cmdBroker(os.Args[2:])
 	case "policy":
 		err = cmdPolicy(os.Args[2:])
+	case "packages":
+		err = cmdPackages(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("colimander", version)
 	case "help", "--help", "-h":
