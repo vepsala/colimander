@@ -39,6 +39,9 @@ type marker struct {
 	CPU               int       `json:"cpu"`
 	Memory            int       `json:"memory"`
 	Disk              int       `json:"disk"`
+	// SwapGiB controls a /swapfile created inside the VM at start time.
+	// 0 = no swap. Idempotent — applied on every `start` if non-zero.
+	SwapGiB int `json:"swap_gib,omitempty"`
 	// ImportedFrom records what was loaded into the VM at create time. Either a
 	// host path (mode "dir") or a git URL (mode "repo"). For audit only.
 	ImportedFrom string `json:"imported_from,omitempty"`
@@ -406,7 +409,36 @@ func startProfile(m *marker) error {
 		fmt.Fprintf(os.Stderr, "warning: failed to update /etc/hosts: %v\n", err)
 		fmt.Fprintf(os.Stderr, "  retry manually with: colimander hosts-sync\n")
 	}
+	if m.SwapGiB > 0 {
+		if err := ensureSwap(m.Name, m.SwapGiB); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: swap setup failed: %v\n", err)
+		}
+	}
 	return nil
+}
+
+// ensureSwap idempotently creates and activates a /swapfile of the requested
+// size inside the VM and persists it in /etc/fstab. Safe to call on every
+// start — if a /swapfile is already active at the right size, this is a no-op.
+func ensureSwap(profile string, gib int) error {
+	script := fmt.Sprintf(`set -e
+DESIRED_BYTES=$(( %d * 1024 * 1024 * 1024 ))
+if swapon --show=NAME,SIZE --bytes --noheadings 2>/dev/null | awk '$1=="/swapfile"{print $2}' | grep -qx "$DESIRED_BYTES"; then
+  exit 0
+fi
+sudo swapoff /swapfile 2>/dev/null || true
+sudo rm -f /swapfile
+sudo fallocate -l %dG /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile > /dev/null
+sudo swapon /swapfile
+grep -q "^/swapfile " /etc/fstab || echo "/swapfile none swap sw 0 0" | sudo tee -a /etc/fstab > /dev/null
+`, gib, gib)
+	cmd := exec.Command("colima", "ssh", "-p", profile, "--", "bash", "-s")
+	cmd.Stdin = strings.NewReader(script)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // activateBrokerForProfile starts the broker daemon (if not already running)
@@ -759,6 +791,7 @@ func cmdSetup(args []string) error {
 	cpuStr := "2"
 	memStr := "4"
 	diskStr := "20"
+	swapStr := "4"
 	doImport := false
 	importPath := ""
 	var pickedPkgIDs []string
@@ -801,6 +834,7 @@ func cmdSetup(args []string) error {
 			huh.NewInput().Title("CPU cores").Value(&cpuStr).Validate(validatePositiveInt),
 			huh.NewInput().Title("Memory (GiB)").Value(&memStr).Validate(validatePositiveInt),
 			huh.NewInput().Title("Disk (GiB)").Value(&diskStr).Validate(validatePositiveInt),
+			huh.NewInput().Title("Swap (GiB)").Description("0 = none. Recommended ~half of memory for headroom.").Value(&swapStr).Validate(validateNonNegativeInt),
 		),
 		huh.NewGroup(
 			huh.NewConfirm().
@@ -859,6 +893,7 @@ func cmdSetup(args []string) error {
 	cpu, _ := strconv.Atoi(cpuStr)
 	memory, _ := strconv.Atoi(memStr)
 	disk, _ := strconv.Atoi(diskStr)
+	swap, _ := strconv.Atoi(swapStr)
 	if doImport {
 		if abs, err := filepath.Abs(expandHome(importPath)); err == nil {
 			importPath = abs
@@ -876,7 +911,11 @@ func cmdSetup(args []string) error {
 
 	fmt.Println("About to create:")
 	fmt.Printf("  Profile:        %s\n", name)
-	fmt.Printf("  Resources:      %d CPU / %d GiB RAM / %d GiB disk\n", cpu, memory, disk)
+	swapStrLabel := "none"
+	if swap > 0 {
+		swapStrLabel = fmt.Sprintf("%d GiB", swap)
+	}
+	fmt.Printf("  Resources:      %d CPU / %d GiB RAM / %d GiB disk / swap %s\n", cpu, memory, disk, swapStrLabel)
 	if importPath != "" {
 		fmt.Printf("  Import:         %s\n", importPath)
 	}
@@ -922,6 +961,7 @@ func cmdSetup(args []string) error {
 		CPU:               cpu,
 		Memory:            memory,
 		Disk:              disk,
+		SwapGiB:           swap,
 	}
 	if importPath != "" {
 		m.ImportedFrom = importPath
@@ -980,6 +1020,21 @@ func validatePositiveInt(s string) error {
 	}
 	if n <= 0 {
 		return fmt.Errorf("must be > 0")
+	}
+	return nil
+}
+
+func validateNonNegativeInt(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return fmt.Errorf("required")
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return fmt.Errorf("must be an integer")
+	}
+	if n < 0 {
+		return fmt.Errorf("must be >= 0")
 	}
 	return nil
 }
