@@ -50,6 +50,50 @@ type Policy struct {
 	Handle        string     `json:"handle"`
 	AllowedOwners []string   `json:"allowed_owners"`
 	DenyRules     []DenyRule `json:"deny_rules"`
+
+	// Optional external-service brokers. nil means "this profile cannot call
+	// that service" — the broker returns 403 on the corresponding route.
+	// Unlike GitHub (which is denylist-based: allow everything except the
+	// destructive rules), Fly and Doppler are allowlist-based: only methods
+	// + paths matching AllowedEndpoints get through. Smaller blast radius.
+	FlyPolicy     *FlyPolicy     `json:"fly_policy,omitempty"`
+	DopplerPolicy *DopplerPolicy `json:"doppler_policy,omitempty"`
+}
+
+// EndpointRule is the allowlist primitive shared by Fly and Doppler. A request
+// is allowed if at least one rule matches both Method and PathGlob.
+type EndpointRule struct {
+	Method      string `json:"method"`
+	PathGlob    string `json:"path_glob"`
+	Description string `json:"description,omitempty"`
+}
+
+// FlyPolicy gates which fly.io API operations a VM may call.
+//
+// AllowedApps is a soft scope check: when a path includes an app name
+// (/v1/apps/<app>/...), the broker verifies that <app> is in this list.
+// Paths without an app segment skip the check.
+//
+// AllowedEndpoints is the per-(method, path) allowlist. Endpoints not on the
+// list are denied — there is no equivalent of DenyRules here, by design: the
+// fly API surface is large and "default deny" is the safer model.
+type FlyPolicy struct {
+	AllowedApps      []string       `json:"allowed_apps"`
+	AllowedEndpoints []EndpointRule `json:"allowed_endpoints"`
+}
+
+// DopplerPolicy gates doppler secrets access.
+//
+// AllowedProjects is a project-name allowlist. When the request carries a
+// `project` query parameter (Doppler's standard scoping mechanism), the
+// broker verifies it's in this list.
+//
+// AllowedEndpoints follows the same shape as Fly's. The default rule set is
+// intentionally write-only (POST /v3/configs/config/secrets) to match the
+// "agent can add secrets, never read them" use case.
+type DopplerPolicy struct {
+	AllowedProjects  []string       `json:"allowed_projects"`
+	AllowedEndpoints []EndpointRule `json:"allowed_endpoints"`
 }
 
 // DenyRule describes one operation the broker refuses.

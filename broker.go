@@ -396,7 +396,7 @@ func brokerRewire(args []string) error {
 	if err := savePolicy(name, pol); err != nil {
 		return err
 	}
-	if err := wireBrokerInVM(name, pol.Handle); err != nil {
+	if err := wireBrokerInVM(name, pol); err != nil {
 		return err
 	}
 	fmt.Printf("Rewired %q. New handle is in %s.\n", name, policyPath(name))
@@ -436,6 +436,10 @@ func brokerRun(args []string) error {
 	mux.HandleFunc("/api/", b.handleAPI)
 	mux.HandleFunc("/api", b.handleAPI)
 	mux.HandleFunc("/git/", b.handleGit)
+	mux.HandleFunc("/fly/", b.handleFly)
+	mux.HandleFunc("/fly", b.handleFly)
+	mux.HandleFunc("/doppler/", b.handleDoppler)
+	mux.HandleFunc("/doppler", b.handleDoppler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})

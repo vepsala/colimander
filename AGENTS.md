@@ -19,16 +19,25 @@ install step.
 ## Repo layout
 
 - `main.go` — entrypoint, command dispatch, profile lifecycle (`setup`, `create`,
-  `start`, `stop`, `destroy`, `ssh`, `status`, `ls`, `ports`, `init`, `hosts-sync`),
-  wizard.
+  `start`, `stop`, `destroy`, `ssh`, `status`, `ls`, `ports`, `init`, `hosts-sync`,
+  `tokens`), wizard.
 - `broker.go` — `colimanderd` daemon. HTTP proxy for github.com /
-  api.github.com, source-IP identity, gh-token injection, audit log.
-- `policy.go` — `Policy` shape, default deny rules, matcher.
+  api.github.com, Basic-auth handle identity, gh-token injection, audit log.
+- `external.go` — `colimanderd` extension: same daemon, two more routes —
+  `/fly` → `https://api.fly.io`, `/doppler` → `https://api.doppler.com`.
+  Allowlist policy (not denylist), Bearer-token identity, `httputil.ReverseProxy`
+  for streaming (fly logs).
+- `policy.go` — `Policy` shape (incl. `FlyPolicy`, `DopplerPolicy`), default
+  deny rules, allow-rule matcher.
+- `tokens.go` — upstream-token storage at `~/.colimander/tokens.json` (0600).
+  Used only by the external brokers; the GitHub broker still sources from
+  `gh auth token`.
 - `gitpkt.go` — minimal git pkt-line parser for ref-deletion detection on push.
 - `packages.go` — optional package catalog (Claude Code, OpenCode, Postgres-16,
   Node-via-mise) plus the always-on `tmux` baseline.
-- `*_test.go` — unit tests for the policy matcher and pkt-line parser. No
-  network / VM tests; the broker is smoke-tested by hand.
+- `docs/external-brokers.md` — user-facing doc for the fly + doppler surface.
+- `*_test.go` — unit tests for policy matchers, allow-rules, and pkt-line
+  parser. No network / VM tests; the broker is smoke-tested by hand.
 
 ## Conventions
 
@@ -59,6 +68,14 @@ install step.
   Tested.
 - **`gh` token is fetched via `gh auth token`** with a 60s cache in the
   broker. Don't add a separate credential store.
+- **Fly/Doppler tokens live in `~/.colimander/tokens.json` (0600).** Don't
+  echo them back to the user, don't include in `colimander status` /
+  `colimander policy show`, don't commit. The broker reads them at request
+  time (no caching needed — they're small).
+- **Fly/Doppler use Bearer auth with `<profile>:<handle>` as the token.**
+  flyctl and the Doppler CLI only respect their single env-var token, so we
+  pack the broker identity into the Bearer slot rather than negotiating
+  Basic. Don't try to make the upstream CLIs use Basic — they won't.
 
 ## Threat model anchor
 
@@ -76,8 +93,10 @@ agent can do with this permission, and is it reversible?"
 
 - Force-push detection on git push (requires upstream HEAD compare per push).
 - `gh` CLI brokering (needs GHE-style `/api/v3/` path support).
-- mTLS profile identity (currently per-source-IP, v1-strength).
+- mTLS profile identity (currently HTTP Basic-auth with handle).
 - Excludes for `--import-dir` (skip `node_modules`, `.next`, etc., or offer
   `--from-repo` clone-in-VM as an alternative).
+- Quota-as-policy for fly (e.g. "no more than N apps") — would need
+  stateful counters per profile; today we just deny app-create entirely.
 - README/docs are written for humans; this file is the agent-facing
   equivalent — keep them in sync if you change behaviour either way.
