@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pg-agent-proxy</title>
+<style>
+  :root { --bg:#0f1216; --panel:#171b21; --line:#272d36; --fg:#e6e9ee; --muted:#8b93a1; --accent:#5b9dff; --danger:#ff6b6b; --ok:#46c08d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  header { padding:18px 24px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:12px; }
+  header h1 { font-size:17px; margin:0; font-weight:650; }
+  header span { color:var(--muted); font-size:12px; }
+  main { max-width:1100px; margin:0 auto; padding:24px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px; margin-bottom:22px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 14px; }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; font-size:12px; }
+  code { background:#0c0f13; border:1px solid var(--line); border-radius:5px; padding:1px 6px; font:12px ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  input[type=text], select { width:100%; background:#0c0f13; border:1px solid var(--line); border-radius:6px; color:var(--fg); padding:8px 10px; font:13px inherit; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; }
+  .row > div { flex:1; min-width:180px; }
+  .check { display:flex; align-items:center; gap:8px; margin-top:24px; }
+  .check input { width:auto; }
+  button { background:var(--accent); color:#06101f; border:0; border-radius:6px; padding:8px 14px; font:600 13px inherit; cursor:pointer; }
+  button.secondary { background:#222834; color:var(--fg); border:1px solid var(--line); }
+  button.danger { background:transparent; color:var(--danger); border:1px solid var(--line); }
+  .actions { display:flex; gap:6px; }
+  .pii { display:flex; gap:8px; margin-bottom:8px; align-items:center; }
+  .pii input, .pii select { width:auto; flex:1; }
+  .banner { background:#10261c; border:1px solid var(--ok); border-radius:8px; padding:14px; margin-bottom:18px; }
+  .banner h3 { margin:0 0 8px; font-size:13px; color:var(--ok); }
+  .banner .secret { display:flex; gap:8px; align-items:center; margin-top:8px; }
+  .banner .secret code { flex:1; }
+  .muted { color:var(--muted); }
+  .tag { display:inline-block; background:#1d2530; border:1px solid var(--line); border-radius:4px; padding:0 6px; font-size:11px; margin:0 4px 4px 0; }
+  .empty { color:var(--muted); padding:14px 10px; }
+  .err { color:var(--danger); margin-top:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>pg-agent-proxy</h1>
+  <span>connection registry &amp; PII / approval policy</span>
+  <form method="POST" action="/logout" style="margin-left:auto"><button class="secondary" type="submit">Sign out</button></form>
+</header>
+<main>
+  <div id="banner"></div>
+
+  <div class="panel" id="approvals-panel" style="display:none">
+    <h2>Pending approvals</h2>
+    <table>
+      <thead><tr><th>Age</th><th>Reason</th><th>Client</th><th>Statement</th><th></th></tr></thead>
+      <tbody id="approvals"></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>New connection</h2>
+    <div class="row">
+      <div><label>Name</label><input id="f-name" type="text" placeholder="billing-db"></div>
+      <div style="flex:2"><label>Upstream connection string</label><input id="f-upstream" type="text" placeholder="postgres://user:pass@host:5432/db?sslmode=disable"></div>
+    </div>
+    <div class="row">
+      <div><label>Max rows before approval</label><input id="f-maxrows" type="text" value="1000"></div>
+      <div class="check"><input id="f-gate" type="checkbox" checked><label style="margin:0">Require approval for mutations</label></div>
+    </div>
+    <label>PII columns</label>
+    <div id="pii-list"></div>
+    <button class="secondary" type="button" onclick="addPii()">+ Add PII column</button>
+    <div style="margin-top:16px"><button onclick="create()">Create connection</button></div>
+    <div id="create-err" class="err"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Connections</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Agent user</th><th>Upstream</th><th>Limits</th><th>PII</th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const actions = ["hash","redact"];
+
+// req wraps fetch and bounces to the login page when the session expires.
+async function req(url, opts) {
+  const res = await fetch(url, opts);
+  if (res.status === 401) { location.href = "/"; throw new Error("unauthorized"); }
+  return res;
+}
+
+function addPii(name="", table="", action="hash") {
+  const div = document.createElement("div");
+  div.className = "pii";
+  div.innerHTML = `
+    <input type="text" placeholder="column" value="${esc(name)}" data-k="name">
+    <input type="text" placeholder="table (optional)" value="${esc(table)}" data-k="table">
+    <select data-k="action">${actions.map(a=>`<option ${a===action?"selected":""}>${a}</option>`).join("")}</select>
+    <button class="danger" type="button" onclick="this.parentNode.remove()">×</button>`;
+  $("#pii-list").appendChild(div);
+}
+
+function gatherPii() {
+  return [...document.querySelectorAll("#pii-list .pii")].map(d => {
+    const g = k => d.querySelector(`[data-k=${k}]`).value.trim();
+    return { name:g("name"), table:g("table"), action:g("action") };
+  }).filter(r => r.name);
+}
+
+function esc(s){ return (s||"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+async function create() {
+  $("#create-err").textContent = "";
+  const body = {
+    name: $("#f-name").value.trim(),
+    upstream_url: $("#f-upstream").value.trim(),
+    max_rows: parseInt($("#f-maxrows").value || "0", 10),
+    gate_mutations: $("#f-gate").checked,
+    pii_rules: gatherPii(),
+  };
+  const res = await req("/api/connections", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  const data = await res.json();
+  if (!res.ok) { $("#create-err").textContent = data.error || "failed"; return; }
+  showSecret(data, "Connection created");
+  $("#f-name").value = ""; $("#f-upstream").value = ""; $("#pii-list").innerHTML = "";
+  load();
+}
+
+function showSecret(data, title) {
+  $("#banner").innerHTML = `
+    <div class="banner">
+      <h3>${esc(title)} — copy the connection string now, the password is shown only once</h3>
+      <div class="secret"><code id="cs">${esc(data.connection_string)}</code>
+        <button class="secondary" onclick="copy('cs')">Copy</button></div>
+      <div class="muted" style="margin-top:8px">Password: <code>${esc(data.agent_password)}</code></div>
+    </div>`;
+  window.scrollTo({top:0, behavior:"smooth"});
+}
+
+function copy(id){ navigator.clipboard.writeText($("#"+id).textContent); }
+
+async function rotate(id) {
+  if (!confirm("Rotate the password? The old one stops working immediately.")) return;
+  const res = await req(`/api/connections/${id}/rotate`, {method:"POST"});
+  const data = await res.json();
+  if (res.ok) showSecret(data, "Password rotated");
+}
+
+async function del(id, name) {
+  if (!confirm(`Delete connection "${name}"?`)) return;
+  await req(`/api/connections/${id}`, {method:"DELETE"});
+  load();
+}
+
+async function load() {
+  const res = await req("/api/connections");
+  const conns = await res.json();
+  const rows = $("#rows");
+  if (!conns.length) { rows.innerHTML = `<tr><td colspan="6" class="empty">No connections yet — create one above.</td></tr>`; return; }
+  rows.innerHTML = conns.map(c => `
+    <tr>
+      <td>${esc(c.name)}</td>
+      <td><code>${esc(c.agent_username)}</code></td>
+      <td class="muted">${esc(c.upstream_url)}</td>
+      <td>${c.max_rows||"∞"} rows<br>${c.gate_mutations?"gated":"open"}</td>
+      <td>${(c.pii_rules||[]).map(r=>`<span class="tag">${esc(r.name)}:${esc(r.action)}</span>`).join("")||'<span class="muted">none</span>'}</td>
+      <td class="actions">
+        <button class="secondary" onclick="rotate(${c.id})">Rotate</button>
+        <button class="danger" onclick="del(${c.id}, ${JSON.stringify(c.name)})">Delete</button>
+      </td>
+    </tr>`).join("");
+}
+
+// --- pending approvals (dashboard mode) ---
+function ago(ts) {
+  const s = Math.max(0, Math.round((Date.now() - new Date(ts)) / 1000));
+  return s < 60 ? s + "s" : Math.floor(s/60) + "m" + (s%60) + "s";
+}
+
+async function decide(id, approved) {
+  await req(`/api/approvals/${id}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({approved})});
+  loadApprovals();
+}
+
+async function loadApprovals() {
+  let items = [];
+  try { items = await (await req("/api/approvals")).json(); } catch { return; }
+  const panel = $("#approvals-panel");
+  panel.style.display = items.length ? "block" : "none";
+  $("#approvals").innerHTML = items.map(a => `
+    <tr>
+      <td>${ago(a.created_at)}</td>
+      <td><span class="tag">${esc(a.reason)}</span>${a.row_count?` ${a.row_count} rows`:""}</td>
+      <td class="muted">${esc(a.client)}</td>
+      <td><code>${esc((a.query||"").slice(0,120))}</code></td>
+      <td class="actions">
+        <button onclick="decide('${a.id}', true)">Approve</button>
+        <button class="danger" onclick="decide('${a.id}', false)">Deny</button>
+      </td>
+    </tr>`).join("");
+}
+
+addPii(); load(); loadApprovals(); setInterval(loadApprovals, 2000);
+</script>
+</body>
+</html>

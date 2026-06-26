@@ -1,0 +1,18 @@
+# Build artifacts and local state
+/pg-agent-proxy
+*.exe
+*.db
+*.db-wal
+*.db-shm
+
+# Local config (provide via env or a mounted file at runtime)
+/config.yaml
+
+# VCS, CI, docs not needed in the build context
+.git
+.github
+*.md
+
+# Editor / OS cruft
+.DS_Store
+*.swp

@@ -1,0 +1,15 @@
+# Build output
+/pg-agent-proxy
+*.exe
+
+# Local configuration (may contain credentials)
+/config.yaml
+
+# SQLite registry (contains hashed credentials + upstream URLs)
+*.db
+*.db-wal
+*.db-shm
+
+# Editor / OS cruft
+.DS_Store
+*.swp

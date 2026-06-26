@@ -1,0 +1,38 @@
+# pg-agent-proxy process-wide configuration.
+# Copy to config.yaml and adjust. Per-connection settings (upstream URL,
+# credentials, PII and gating rules) live in the SQLite registry, not here —
+# manage them in the web UI or with `pg-agent-proxy connections`.
+
+# Address the PostgreSQL proxy listens on. Agents connect here.
+listen: "127.0.0.1:6432"
+
+# Address the management web UI / API listens on. Protect it with a master
+# token set in the PGPROXY_ADMIN_TOKEN environment variable (e.g. via Doppler).
+# Without a token it only starts when bound to loopback; on any other address it
+# refuses to start. On Fly.io bind to "0.0.0.0:6480" and set the token.
+admin_listen: "127.0.0.1:6480"
+
+# Path to the SQLite registry file (created on first run).
+database: "pgproxy.db"
+
+# Secret salt mixed into every PII hash. Set a stable, random value; changing
+# it changes all hashes.
+hash_salt: "set-a-random-salt-here"
+
+# Replacement string for columns with PII action "redact".
+redact_string: "[REDACTED]"
+
+# Pseudo-function clients call to fetch the live, PII-annotated schema:
+#   SELECT pgproxy_schema();
+schema_function: "pgproxy_schema"
+
+# How gated statements (mutations and oversized reads) are approved.
+#   mode: dashboard    -> approve/deny from the admin UI (no external wiring).
+#   mode: http         -> POST the request to `url`; proceed only if approved.
+#   mode: auto_approve -> approve everything (dev only).
+#   mode: auto_deny    -> deny everything gated (safe default with no approver).
+# `timeout` bounds how long a gated query waits before being denied.
+approval:
+  mode: "dashboard"
+  timeout: "2m"
+  # url: "http://127.0.0.1:9000/approve"   # only for mode: http
