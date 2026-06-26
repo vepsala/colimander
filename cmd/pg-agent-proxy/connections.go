@@ -82,7 +82,7 @@ func connAdd(args []string) {
 
 	fmt.Printf("Created connection %q (agent user: %s)\n\n", conn.Name, conn.AgentUsername)
 	fmt.Println("Connection string (password shown only once):")
-	fmt.Println("  " + connString(cfg.Listen, conn.AgentUsername, password))
+	fmt.Println("  " + connString(cfg, conn.AgentUsername, password))
 }
 
 func connList(args []string) {
@@ -136,7 +136,7 @@ func connRotate(args []string) {
 		}
 	}
 	fmt.Println("New connection string (password shown only once):")
-	fmt.Println("  " + connString(cfg.Listen, username, password))
+	fmt.Println("  " + connString(cfg, username, password))
 }
 
 func connRemove(args []string) {
@@ -172,14 +172,25 @@ func parsePII(spec string) []policy.PIIRule {
 	return rules
 }
 
-func connString(listen, username, password string) string {
-	host, port, err := net.SplitHostPort(listen)
+func advertiseFor(cfg *config.Config) string {
+	if cfg.PublicAddr != "" {
+		return cfg.PublicAddr
+	}
+	return cfg.Listen
+}
+
+func connString(cfg *config.Config, username, password string) string {
+	host, port, err := net.SplitHostPort(advertiseFor(cfg))
 	if err != nil {
 		host, port = "127.0.0.1", "6432"
 	}
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
-	return fmt.Sprintf("postgres://%s:%s@%s/postgres?sslmode=disable",
-		url.QueryEscape(username), url.QueryEscape(password), net.JoinHostPort(host, port))
+	sslMode := "disable"
+	if cfg.TLS.Enabled() {
+		sslMode = "verify-full"
+	}
+	return fmt.Sprintf("postgres://%s:%s@%s/postgres?sslmode=%s",
+		url.QueryEscape(username), url.QueryEscape(password), net.JoinHostPort(host, port), sslMode)
 }

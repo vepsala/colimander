@@ -126,7 +126,11 @@ func runServe(args []string) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			adminSrv := admin.New(st, cfg.Listen, adminToken, broker, adminTLS, log)
+			advertise := cfg.PublicAddr
+			if advertise == "" {
+				advertise = cfg.Listen
+			}
+			adminSrv := admin.New(st, advertise, adminToken, broker, adminTLS, log)
 			if err := adminSrv.ListenAndServe(ctx, cfg.AdminListen); err != nil {
 				log.Error("admin server stopped", "err", err)
 			}

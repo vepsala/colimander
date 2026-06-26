@@ -26,6 +26,11 @@ type Config struct {
 	// Database is the path to the SQLite registry file.
 	Database string `yaml:"database"`
 
+	// PublicAddr is the host:port shown in agent connection strings (e.g.
+	// "proxy.example.com:5432"). Defaults to Listen. Set this when the
+	// public address differs from the internal listen address (NAT, Fly, ...).
+	PublicAddr string `yaml:"public_addr"`
+
 	// HashSalt is mixed into every PII hash. Set a stable, secret value.
 	HashSalt string `yaml:"hash_salt"`
 
@@ -122,6 +127,7 @@ func (c *Config) applyEnv() error {
 	setString(&c.Listen, "PGPROXY_LISTEN")
 	setString(&c.AdminListen, "PGPROXY_ADMIN_LISTEN")
 	setString(&c.Database, "PGPROXY_DATABASE")
+	setString(&c.PublicAddr, "PGPROXY_PUBLIC_ADDR")
 	setString(&c.HashSalt, "PGPROXY_HASH_SALT")
 	setString(&c.RedactString, "PGPROXY_REDACT_STRING")
 	setString(&c.SchemaFunction, "PGPROXY_SCHEMA_FUNCTION")

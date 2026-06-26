@@ -41,6 +41,7 @@ type Server struct {
 	token     string           // master token; empty means unauthenticated
 	broker    *approval.Broker // dashboard approvals; nil unless mode=dashboard
 	tlsConfig *tls.Config      // when set, serve HTTPS (and answer ACME challenges)
+	sslMode   string           // sslmode shown in agent connection strings
 }
 
 // New constructs an admin Server. proxyListen is the proxy's PostgreSQL listen
@@ -50,6 +51,10 @@ type Server struct {
 // tlsConfig, when non-nil, makes the admin server serve HTTPS and answer ACME
 // TLS-ALPN-01 challenges.
 func New(st *store.Store, proxyListen, token string, broker *approval.Broker, tlsConfig *tls.Config, log *slog.Logger) *Server {
+	sslMode := "disable"
+	if tlsConfig != nil {
+		sslMode = "verify-full"
+	}
 	return &Server{
 		store:     st,
 		log:       log,
@@ -57,6 +62,7 @@ func New(st *store.Store, proxyListen, token string, broker *approval.Broker, tl
 		token:     token,
 		broker:    broker,
 		tlsConfig: tlsConfig,
+		sslMode:   sslMode,
 	}
 }
 
@@ -340,8 +346,8 @@ func (s *Server) handleDecide(w http.ResponseWriter, r *http.Request) {
 
 // connString builds the agent-facing connection string.
 func (s *Server) connString(username, password string) string {
-	return fmt.Sprintf("postgres://%s:%s@%s/postgres?sslmode=disable",
-		url.QueryEscape(username), url.QueryEscape(password), s.advertise)
+	return fmt.Sprintf("postgres://%s:%s@%s/postgres?sslmode=%s",
+		url.QueryEscape(username), url.QueryEscape(password), s.advertise, s.sslMode)
 }
 
 func (s *Server) writeStoreError(w http.ResponseWriter, err error) {
