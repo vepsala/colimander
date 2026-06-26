@@ -200,6 +200,29 @@ The SQLite registry is a single file, so mount a volume at `/data` (or wherever
 `PGPROXY_DATABASE` points) to persist connections across restarts. On Fly.io
 that means a Fly Volume, which pins the app to one machine/region.
 
+### Deploying to Fly.io
+
+[`fly.toml`](fly.toml) deploys one autostop machine with a `/data` volume and
+ACME (Let's Encrypt) TLS. Because the Postgres port is non-standard, it needs a
+**dedicated IPv4**. Secrets come from Fly (synced from Doppler):
+
+```bash
+fly apps create pg-agent-proxy --org <org>
+fly volumes create pgproxy_data --region arn --size 1 -a pg-agent-proxy -y
+fly ips allocate-v4 -a pg-agent-proxy --yes   # dedicated, ~$2/mo (non-80/443 port)
+fly ips allocate-v6 -a pg-agent-proxy
+
+# secrets (e.g. from Doppler): set PGPROXY_ADMIN_TOKEN and PGPROXY_HASH_SALT
+doppler secrets download --no-file --format env | fly secrets import -a pg-agent-proxy
+
+fly deploy -a pg-agent-proxy --remote-only --ha=false
+```
+
+TLS is terminated in the app (`PGPROXY_TLS_MODE=acme`), validated via
+TLS-ALPN-01 on the admin HTTPS port (443), and the trusted cert is reused for
+the Postgres port (5432). Clients connect with `sslmode=verify-full`. Make
+`PGPROXY_TLS_HOSTS` match the app hostname (e.g. `<app>.fly.dev`).
+
 ## Statement classification
 
 Each statement is classified and gated conservatively:
