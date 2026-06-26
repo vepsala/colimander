@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -79,6 +80,7 @@ func (s *session) serve(ctx context.Context) {
 // to the matching upstream, and compiles that connection's policy.
 func (s *session) startup(ctx context.Context) bool {
 	var startupMsg *pgproto3.StartupMessage
+	usedTLS := false
 	for startupMsg == nil {
 		msg, err := s.be.ReceiveStartupMessage()
 		if err != nil {
@@ -86,8 +88,31 @@ func (s *session) startup(ctx context.Context) bool {
 		}
 		switch m := msg.(type) {
 		case *pgproto3.StartupMessage:
+			if s.srv.tlsConfig != nil && s.srv.cfg.TLS.Required && !usedTLS {
+				s.fatal("28000", "SSL connection is required")
+				return false
+			}
 			startupMsg = m
-		case *pgproto3.SSLRequest, *pgproto3.GSSEncRequest:
+		case *pgproto3.SSLRequest:
+			if s.srv.tlsConfig == nil {
+				if _, err := s.conn.Write([]byte("N")); err != nil {
+					return false
+				}
+				continue
+			}
+			if _, err := s.conn.Write([]byte("S")); err != nil {
+				return false
+			}
+			tlsConn := tls.Server(s.conn, s.srv.tlsConfig)
+			if err := tlsConn.HandshakeContext(ctx); err != nil {
+				s.log.Debug("tls handshake failed", "err", err)
+				return false
+			}
+			s.conn = tlsConn
+			s.be = pgproto3.NewBackend(tlsConn, tlsConn)
+			usedTLS = true
+		case *pgproto3.GSSEncRequest:
+			// GSSAPI encryption is not supported; decline.
 			if _, err := s.conn.Write([]byte("N")); err != nil {
 				return false
 			}

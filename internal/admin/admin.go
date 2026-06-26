@@ -6,6 +6,7 @@ package admin
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -39,19 +40,23 @@ type Server struct {
 	advertise string           // host:port shown in connection strings
 	token     string           // master token; empty means unauthenticated
 	broker    *approval.Broker // dashboard approvals; nil unless mode=dashboard
+	tlsConfig *tls.Config      // when set, serve HTTPS (and answer ACME challenges)
 }
 
 // New constructs an admin Server. proxyListen is the proxy's PostgreSQL listen
 // address, used to build the agent-facing connection strings. token is the
 // master admin token; if empty the admin surface is unauthenticated. broker is
 // the dashboard approval broker, or nil when approvals are not dashboard-backed.
-func New(st *store.Store, proxyListen, token string, broker *approval.Broker, log *slog.Logger) *Server {
+// tlsConfig, when non-nil, makes the admin server serve HTTPS and answer ACME
+// TLS-ALPN-01 challenges.
+func New(st *store.Store, proxyListen, token string, broker *approval.Broker, tlsConfig *tls.Config, log *slog.Logger) *Server {
 	return &Server{
 		store:     st,
 		log:       log,
 		advertise: advertiseAddr(proxyListen),
 		token:     token,
 		broker:    broker,
+		tlsConfig: tlsConfig,
 	}
 }
 
@@ -142,6 +147,7 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 		Addr:              addr,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		TLSConfig:         s.tlsConfig,
 	}
 	go func() {
 		<-ctx.Done()
@@ -149,8 +155,15 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()
-	s.log.Info("admin UI listening", "url", "http://"+advertiseAddr(addr))
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+
+	scheme := "http"
+	serve := srv.ListenAndServe
+	if s.tlsConfig != nil {
+		scheme = "https"
+		serve = func() error { return srv.ListenAndServeTLS("", "") }
+	}
+	s.log.Info("admin UI listening", "url", scheme+"://"+advertiseAddr(addr))
+	if err := serve(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil

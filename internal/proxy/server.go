@@ -6,6 +6,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"log/slog"
 	"net"
 	"sync/atomic"
@@ -17,21 +18,24 @@ import (
 
 // Server accepts client connections and proxies them to upstream databases.
 type Server struct {
-	cfg      *config.Config
-	store    *store.Store
-	approver approval.Approver
-	log      *slog.Logger
-	connSeq  atomic.Uint64
+	cfg       *config.Config
+	store     *store.Store
+	approver  approval.Approver
+	tlsConfig *tls.Config
+	log       *slog.Logger
+	connSeq   atomic.Uint64
 }
 
 // New constructs a Server. The approver is shared with the admin server so the
-// dashboard can resolve pending requests.
-func New(cfg *config.Config, st *store.Store, approver approval.Approver, log *slog.Logger) *Server {
+// dashboard can resolve pending requests. tlsConfig enables TLS termination on
+// the proxy port when non-nil.
+func New(cfg *config.Config, st *store.Store, approver approval.Approver, tlsConfig *tls.Config, log *slog.Logger) *Server {
 	return &Server{
-		cfg:      cfg,
-		store:    st,
-		approver: approver,
-		log:      log,
+		cfg:       cfg,
+		store:     st,
+		approver:  approver,
+		tlsConfig: tlsConfig,
+		log:       log,
 	}
 }
 

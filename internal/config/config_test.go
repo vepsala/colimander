@@ -86,9 +86,12 @@ func TestEnvOverridesFile(t *testing.T) {
 
 func TestValidateErrors(t *testing.T) {
 	cases := map[string]string{
-		"bad approval mode": "approval: {mode: maybe}",
-		"http without url":  "approval: {mode: http}",
-		"unknown field":     "nonsense: true",
+		"bad approval mode":  "approval: {mode: maybe}",
+		"http without url":   "approval: {mode: http}",
+		"unknown field":      "nonsense: true",
+		"acme without hosts": "tls: {mode: acme}",
+		"file without paths": "tls: {mode: file}",
+		"bad tls mode":       "tls: {mode: bogus}",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -23,6 +23,7 @@ import (
 
 	"github.com/kotisivukamu/pg-agent-proxy/internal/admin"
 	"github.com/kotisivukamu/pg-agent-proxy/internal/approval"
+	"github.com/kotisivukamu/pg-agent-proxy/internal/certs"
 	"github.com/kotisivukamu/pg-agent-proxy/internal/config"
 	"github.com/kotisivukamu/pg-agent-proxy/internal/proxy"
 	"github.com/kotisivukamu/pg-agent-proxy/internal/store"
@@ -90,6 +91,16 @@ func runServe(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// TLS provider shared by the proxy port and the admin HTTPS listener (which
+	// also answers ACME challenges).
+	certProvider, err := certs.New(cfg.TLS, log)
+	if err != nil {
+		log.Error("tls setup failed", "err", err)
+		os.Exit(1)
+	}
+	proxyTLS := certProvider.ProxyTLSConfig()
+	adminTLS := certProvider.AdminTLSConfig()
+
 	// One approver shared by the proxy and the admin server, so dashboard-mode
 	// approvals raised by the proxy can be resolved from the UI.
 	approver := approval.New(cfg.Approval)
@@ -115,14 +126,14 @@ func runServe(args []string) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			adminSrv := admin.New(st, cfg.Listen, adminToken, broker, log)
+			adminSrv := admin.New(st, cfg.Listen, adminToken, broker, adminTLS, log)
 			if err := adminSrv.ListenAndServe(ctx, cfg.AdminListen); err != nil {
 				log.Error("admin server stopped", "err", err)
 			}
 		}()
 	}
 
-	srv := proxy.New(cfg, st, approver, log)
+	srv := proxy.New(cfg, st, approver, proxyTLS, log)
 	if err := srv.ListenAndServe(ctx); err != nil {
 		log.Error("proxy stopped", "err", err)
 		stop()
