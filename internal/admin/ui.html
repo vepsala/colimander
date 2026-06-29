@@ -38,6 +38,20 @@
   .tag { display:inline-block; background:#1d2530; border:1px solid var(--line); border-radius:4px; padding:0 6px; font-size:11px; margin:0 4px 4px 0; }
   .empty { color:var(--muted); padding:14px 10px; }
   .err { color:var(--danger); margin-top:8px; }
+  /* approval modal */
+  .overlay { position:fixed; inset:0; background:rgba(4,6,9,.74); backdrop-filter:blur(3px); display:flex; align-items:center; justify-content:center; z-index:1000; padding:24px; }
+  .modal { background:var(--panel); border:1px solid var(--accent); border-radius:14px; padding:22px 24px; width:min(680px,100%); max-height:86vh; overflow:auto; box-shadow:0 24px 70px rgba(0,0,0,.55); }
+  .modal h2 { color:var(--fg); font-size:16px; text-transform:none; letter-spacing:0; margin:0 0 2px; }
+  .modal .sub { color:var(--muted); font-size:12px; margin-bottom:6px; }
+  .acard { border:1px solid var(--line); border-radius:10px; padding:16px; margin-top:14px; }
+  .acard .ameta { font-size:12px; margin-bottom:10px; }
+  .acard .aquery { display:block; padding:11px 12px; white-space:pre-wrap; word-break:break-word; line-height:1.5; }
+  .acard .aact { display:flex; gap:10px; margin-top:14px; }
+  .acard .aact button { flex:1; padding:12px; font-size:14px; }
+  button.approve { background:var(--ok); color:#04130c; }
+  button.deny { background:transparent; color:var(--danger); border:1px solid var(--danger); }
+  @keyframes pop { from { transform:scale(.96); opacity:0 } to { transform:scale(1); opacity:1 } }
+  .modal { animation: pop .12s ease-out; }
 </style>
 </head>
 <body>
@@ -48,14 +62,6 @@
 </header>
 <main>
   <div id="banner"></div>
-
-  <div class="panel" id="approvals-panel" style="display:none">
-    <h2>Pending approvals</h2>
-    <table>
-      <thead><tr><th>Age</th><th>Reason</th><th>Client</th><th>Statement</th><th></th></tr></thead>
-      <tbody id="approvals"></tbody>
-    </table>
-  </div>
 
   <div class="panel">
     <h2>New connection</h2>
@@ -82,6 +88,14 @@
     </table>
   </div>
 </main>
+
+<div id="approval-overlay" class="overlay" style="display:none">
+  <div class="modal">
+    <h2 id="approval-title">Approval required</h2>
+    <div class="sub">An agent is waiting. Approve to let the statement run, or deny to block it.</div>
+    <div id="approval-cards"></div>
+  </div>
+</div>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -190,19 +204,19 @@ async function decide(id, approved) {
 async function loadApprovals() {
   let items = [];
   try { items = await (await req("/api/approvals")).json(); } catch { return; }
-  const panel = $("#approvals-panel");
-  panel.style.display = items.length ? "block" : "none";
-  $("#approvals").innerHTML = items.map(a => `
-    <tr>
-      <td>${ago(a.created_at)}</td>
-      <td><span class="tag">${esc(a.reason)}</span>${a.row_count?` ${a.row_count} rows`:""}</td>
-      <td class="muted">${esc(a.client)}</td>
-      <td><code>${esc((a.query||"").slice(0,120))}</code></td>
-      <td class="actions">
-        <button onclick="decide('${a.id}', true)">Approve</button>
-        <button class="danger" onclick="decide('${a.id}', false)">Deny</button>
-      </td>
-    </tr>`).join("");
+  const overlay = $("#approval-overlay");
+  if (!items.length) { overlay.style.display = "none"; return; }
+  $("#approval-title").textContent = items.length === 1 ? "Approval required" : `${items.length} approvals required`;
+  $("#approval-cards").innerHTML = items.map(a => `
+    <div class="acard">
+      <div class="ameta"><span class="tag">${esc(a.reason)}</span>${a.row_count?` · ${a.row_count} rows`:""} · <span class="muted">${esc(a.client)}</span> · <span class="muted">${ago(a.created_at)}</span></div>
+      <code class="aquery">${esc(a.query||"")}</code>
+      <div class="aact">
+        <button class="approve" onclick="decide('${a.id}', true)">Approve</button>
+        <button class="deny" onclick="decide('${a.id}', false)">Deny</button>
+      </div>
+    </div>`).join("");
+  overlay.style.display = "flex";
 }
 
 addPii(); load(); loadApprovals(); setInterval(loadApprovals, 2000);
