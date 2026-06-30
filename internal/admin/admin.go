@@ -212,7 +212,7 @@ func (s *Server) toDTO(c store.Connection) connectionDTO {
 		Name:             c.Name,
 		AgentUsername:    c.AgentUsername,
 		AgentPassword:    c.AgentPassword,
-		UpstreamURL:      c.UpstreamURL,
+		UpstreamURL:      maskURLPassword(c.UpstreamURL),
 		MaxRows:          c.MaxRows,
 		GateMutations:    c.GateMutations,
 		PIIRules:         c.PIIRules,
@@ -343,6 +343,23 @@ func (s *Server) handleDecide(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("approval decided", "id", id, "approved", body.Approved)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// maskURLPassword replaces the password in the upstream URL with "***" for
+// display. Built by hand (not url.String()) so the mask is not percent-encoded.
+func maskURLPassword(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	if _, hasPw := u.User.Password(); !hasPw {
+		return raw
+	}
+	masked := u.Scheme + "://" + u.User.Username() + ":***@" + u.Host + u.Path
+	if u.RawQuery != "" {
+		masked += "?" + u.RawQuery
+	}
+	return masked
 }
 
 // connString builds the agent-facing connection string.

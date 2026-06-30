@@ -11,7 +11,7 @@
   header { padding:18px 24px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:12px; }
   header h1 { font-size:17px; margin:0; font-weight:650; }
   header span { color:var(--muted); font-size:12px; }
-  main { max-width:1100px; margin:0 auto; padding:24px; }
+  main { max-width:1500px; margin:0 auto; padding:24px; }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px; margin-bottom:22px; }
   h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 14px; }
   table { width:100%; border-collapse:collapse; }
@@ -34,12 +34,15 @@
   .tag { display:inline-block; background:#1d2530; border:1px solid var(--line); border-radius:4px; padding:0 6px; font-size:11px; margin:0 4px 4px 0; }
   .empty { color:var(--muted); padding:14px 10px; }
   .err { color:var(--danger); margin-top:8px; }
-  /* connection string row under each connection */
+  /* agent connection string row under each connection */
   .mainrow td { border-bottom:0; padding-bottom:4px; }
   .csrow td { padding-top:0; }
-  .cs { display:flex; gap:8px; align-items:center; }
-  .cs code { flex:1; }
+  .upstream { display:inline-block; max-width:380px; word-break:break-all; }
+  .cs { display:flex; gap:10px; align-items:center; }
   .cs .clabel { color:var(--muted); font-size:11px; white-space:nowrap; }
+  .copyable { flex:1; cursor:pointer; word-break:break-all; }
+  .copyable:hover { border-color:var(--accent); }
+  .copied { color:var(--ok); font-size:11px; white-space:nowrap; opacity:0; transition:opacity .15s; }
   /* approval modal */
   .overlay { position:fixed; inset:0; background:rgba(4,6,9,.74); backdrop-filter:blur(3px); display:flex; align-items:center; justify-content:center; z-index:1000; padding:24px; }
   .modal { background:var(--panel); border:1px solid var(--accent); border-radius:14px; padding:22px 24px; width:min(680px,100%); max-height:86vh; overflow:auto; box-shadow:0 24px 70px rgba(0,0,0,.55); }
@@ -144,7 +147,11 @@ async function create() {
   load();
 }
 
-function copyText(t){ navigator.clipboard.writeText(t); }
+function copyText(el){
+  navigator.clipboard.writeText(el.textContent);
+  const note = el.parentNode.querySelector(".copied");
+  if (note) { note.style.opacity = "1"; setTimeout(() => note.style.opacity = "0", 1000); }
+}
 
 async function rotate(id) {
   if (!confirm("Rotate the password? The old one stops working immediately.")) return;
@@ -166,14 +173,15 @@ async function load() {
   rows.innerHTML = conns.map(c => {
     const cs = c.connection_string || "";
     const csCell = cs
-      ? `<div class="cs"><span class="clabel">agent connection string</span><code>${esc(cs)}</code>
-           <button class="secondary" data-cs="${esc(cs)}" onclick="copyText(this.dataset.cs)">Copy</button></div>`
-      : `<div class="cs"><span class="muted">password not recoverable (admin token changed) — rotate to mint a new one</span></div>`;
+      ? `<div class="cs"><span class="clabel">agent connection string</span>
+           <code class="copyable" title="Click to copy" onclick="copyText(this)">${esc(cs)}</code>
+           <span class="copied">copied ✓</span></div>`
+      : `<div class="cs"><span class="muted">agent password not recoverable (admin token changed) — click Rotate to mint a new one</span></div>`;
     return `
     <tr class="mainrow">
       <td>${esc(c.name)}</td>
       <td><code>${esc(c.agent_username)}</code></td>
-      <td class="muted">${esc(c.upstream_url)}</td>
+      <td class="muted"><span class="upstream">${esc(c.upstream_url)}</span></td>
       <td>${c.max_rows||"∞"} rows<br>${c.gate_mutations?"gated":"open"}</td>
       <td>${(c.pii_rules||[]).map(r=>`<span class="tag">${esc(r.name)}:${esc(r.action)}</span>`).join("")||'<span class="muted">none</span>'}</td>
       <td class="actions">
