@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/kotisivukamu/pg-agent-proxy/internal/approval"
+	"github.com/kotisivukamu/pg-agent-proxy/internal/detect"
 	"github.com/kotisivukamu/pg-agent-proxy/internal/policy"
 	"github.com/kotisivukamu/pg-agent-proxy/internal/store"
 )
@@ -74,8 +75,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /logout", s.handleLogout)
 	mux.Handle("GET /api/connections", s.requireAuth(s.handleList))
 	mux.Handle("POST /api/connections", s.requireAuth(s.handleCreate))
+	mux.Handle("POST /api/detect-pii", s.requireAuth(s.handleDetectPII))
 	mux.Handle("PUT /api/connections/{id}", s.requireAuth(s.handleUpdate))
 	mux.Handle("POST /api/connections/{id}/rotate", s.requireAuth(s.handleRotate))
+	mux.Handle("POST /api/connections/{id}/detect-pii", s.requireAuth(s.handleDetectPIIForConn))
 	mux.Handle("DELETE /api/connections/{id}", s.requireAuth(s.handleDelete))
 	mux.Handle("GET /api/approvals", s.requireAuth(s.handleApprovals))
 	mux.Handle("POST /api/approvals/{id}", s.requireAuth(s.handleDecide))
@@ -348,6 +351,99 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("connection deleted", "id", id)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// piiSuggestion is a deduped detection result: one column, the suggested
+// action, and the tables it was found in (for the reviewer's context).
+type piiSuggestion struct {
+	Name   string   `json:"name"`
+	Action string   `json:"action"`
+	Tables []string `json:"tables"`
+}
+
+// handleDetectPII scans an ad-hoc upstream URL (used by the create form before
+// the connection exists) and returns suggested PII columns.
+func (s *Server) handleDetectPII(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UpstreamURL string `json:"upstream_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(req.UpstreamURL) == "" {
+		writeError(w, http.StatusBadRequest, errors.New("upstream_url is required"))
+		return
+	}
+	s.detectAndRespond(w, r, req.UpstreamURL)
+}
+
+// handleDetectPIIForConn scans an existing connection's stored upstream, so the
+// edit modal can suggest PII columns without re-entering credentials.
+func (s *Server) handleDetectPIIForConn(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid id"))
+		return
+	}
+	conns, err := s.store.List()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	upstream := ""
+	for _, c := range conns {
+		if c.ID == id {
+			upstream = c.UpstreamURL // real (unmasked) upstream, server-side only
+		}
+	}
+	if upstream == "" {
+		writeError(w, http.StatusNotFound, store.ErrNotFound)
+		return
+	}
+	s.detectAndRespond(w, r, upstream)
+}
+
+// detectAndRespond runs a bounded schema scan and writes deduped suggestions.
+func (s *Server) detectAndRespond(w http.ResponseWriter, r *http.Request, upstream string) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	matches, err := detect.Scan(ctx, upstream)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Errorf("schema scan failed: %w", err))
+		return
+	}
+
+	// Dedupe by column (matching is column-name based), preserving first-seen
+	// order and collecting every table the column appears in.
+	byCol := map[string]*piiSuggestion{}
+	var order []string
+	for _, m := range matches {
+		sug, ok := byCol[m.Column]
+		if !ok {
+			sug = &piiSuggestion{Name: m.Column, Action: m.Action}
+			byCol[m.Column] = sug
+			order = append(order, m.Column)
+		}
+		if !containsString(sug.Tables, m.Table) {
+			sug.Tables = append(sug.Tables, m.Table)
+		}
+	}
+	out := make([]piiSuggestion, 0, len(order))
+	for _, col := range order {
+		out = append(out, *byCol[col])
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func containsString(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // handleApprovals lists requests awaiting a dashboard decision.

@@ -30,6 +30,7 @@
   .actions { display:flex; gap:6px; }
   .pii { display:flex; gap:8px; margin-bottom:8px; align-items:center; }
   .pii input, .pii select { width:auto; flex:1; }
+  .pii-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   .muted { color:var(--muted); }
   .tag { display:inline-block; background:#1d2530; border:1px solid var(--line); border-radius:4px; padding:0 6px; font-size:11px; margin:0 4px 4px 0; }
   .empty { color:var(--muted); padding:14px 10px; }
@@ -78,7 +79,11 @@
     </div>
     <label>PII columns</label>
     <div id="pii-list"></div>
-    <button class="secondary" type="button" onclick="addPii()">+ Add PII column</button>
+    <div class="pii-actions">
+      <button class="secondary" type="button" onclick="addPii()">+ Add PII column</button>
+      <button class="secondary" type="button" onclick="detectPii()">⚲ Detect from upstream</button>
+      <span id="detect-status" class="muted"></span>
+    </div>
     <div style="margin-top:16px"><button onclick="create()">Create connection</button></div>
     <div id="create-err" class="err"></div>
   </div>
@@ -103,7 +108,11 @@
     </div>
     <label>PII columns</label>
     <div id="epii-list"></div>
-    <button class="secondary" type="button" onclick="addPiiTo('#epii-list')">+ Add PII column</button>
+    <div class="pii-actions">
+      <button class="secondary" type="button" onclick="addPiiTo('#epii-list')">+ Add PII column</button>
+      <button class="secondary" type="button" onclick="detectPiiEdit()">⚲ Detect from upstream</button>
+      <span id="edit-detect-status" class="muted"></span>
+    </div>
     <div style="margin-top:18px;display:flex;gap:10px">
       <button onclick="saveEdit()">Save changes</button>
       <button class="secondary" onclick="closeEdit()">Cancel</button>
@@ -153,6 +162,46 @@ function gatherPiiFrom(sel) {
 }
 function gatherPii(){ return gatherPiiFrom("#pii-list"); }
 
+// applySuggestions adds detected PII columns to a list, skipping columns that
+// are already present. When a column was found in exactly one table, that table
+// pre-fills the (documentation-only) table field.
+function applySuggestions(sel, suggestions) {
+  const existing = new Set([...document.querySelectorAll(sel+" .pii [data-k=name]")].map(i => i.value.trim().toLowerCase()));
+  suggestions.forEach(s => {
+    const name = (s.name || "").trim();
+    if (!name || existing.has(name.toLowerCase())) return;
+    existing.add(name.toLowerCase());
+    const table = (s.tables && s.tables.length === 1) ? s.tables[0] : "";
+    addPiiTo(sel, name, table, s.action);
+  });
+}
+
+async function runDetect(url, opts, statusSel, listSel) {
+  $(statusSel).textContent = "scanning schema…";
+  let res;
+  try { res = await req(url, opts); }
+  catch { return; }
+  const data = await res.json().catch(() => ([]));
+  if (!res.ok) { $(statusSel).textContent = (data && data.error) || "scan failed"; return; }
+  applySuggestions(listSel, data);
+  $(statusSel).textContent = data.length
+    ? `found ${data.length} likely PII column(s) — review before saving`
+    : "no likely PII columns found";
+}
+
+async function detectPii() {
+  const upstream = $("#f-upstream").value.trim();
+  if (!upstream) { $("#detect-status").textContent = "enter an upstream connection string first"; return; }
+  await runDetect("/api/detect-pii",
+    {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({upstream_url:upstream})},
+    "#detect-status", "#pii-list");
+}
+
+async function detectPiiEdit() {
+  if (editId == null) return;
+  await runDetect(`/api/connections/${editId}/detect-pii`, {method:"POST"}, "#edit-detect-status", "#epii-list");
+}
+
 function esc(s){ return (s||"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 
 async function create() {
@@ -168,6 +217,7 @@ async function create() {
   const data = await res.json();
   if (!res.ok) { $("#create-err").textContent = data.error || "failed"; return; }
   $("#f-name").value = ""; $("#f-upstream").value = ""; $("#pii-list").innerHTML = "";
+  $("#detect-status").textContent = "";
   load();
 }
 
@@ -194,6 +244,7 @@ function edit(id) {
   $("#epii-list").innerHTML = "";
   (c.pii_rules || []).forEach(r => addPiiTo("#epii-list", r.name, r.table, r.action));
   $("#edit-err").textContent = "";
+  $("#edit-detect-status").textContent = "";
   $("#edit-overlay").style.display = "flex";
 }
 
