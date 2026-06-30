@@ -74,6 +74,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /logout", s.handleLogout)
 	mux.Handle("GET /api/connections", s.requireAuth(s.handleList))
 	mux.Handle("POST /api/connections", s.requireAuth(s.handleCreate))
+	mux.Handle("PUT /api/connections/{id}", s.requireAuth(s.handleUpdate))
 	mux.Handle("POST /api/connections/{id}/rotate", s.requireAuth(s.handleRotate))
 	mux.Handle("DELETE /api/connections/{id}", s.requireAuth(s.handleDelete))
 	mux.Handle("GET /api/approvals", s.requireAuth(s.handleApprovals))
@@ -272,6 +273,42 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// conn carries the freshly minted plaintext password, so toDTO renders the
 	// full connection string just like a subsequent list call would.
 	writeJSON(w, http.StatusCreated, s.toDTO(*conn))
+}
+
+// handleUpdate edits a connection's policy fields (not its credentials).
+func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid id"))
+		return
+	}
+	var req createRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		writeError(w, http.StatusBadRequest, errors.New("name is required"))
+		return
+	}
+	in := store.UpdateInput{
+		Name:          req.Name,
+		MaxRows:       1000,
+		GateMutations: true,
+		PIIRules:      req.PIIRules,
+	}
+	if req.MaxRows != nil {
+		in.MaxRows = *req.MaxRows
+	}
+	if req.GateMutations != nil {
+		in.GateMutations = *req.GateMutations
+	}
+	if err := s.store.Update(id, in); err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	s.log.Info("connection updated", "id", id, "name", in.Name)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleRotate(w http.ResponseWriter, r *http.Request) {

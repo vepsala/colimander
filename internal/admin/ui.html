@@ -92,6 +92,26 @@
   </div>
 </main>
 
+<div id="edit-overlay" class="overlay" style="display:none">
+  <div class="modal">
+    <h2>Edit connection</h2>
+    <div class="sub">Policy for <code id="edit-target"></code>. The agent credentials and upstream database are not changed.</div>
+    <label>Name</label><input id="e-name" type="text">
+    <div class="row">
+      <div><label>Max rows before approval</label><input id="e-maxrows" type="text"></div>
+      <div class="check"><input id="e-gate" type="checkbox"><label style="margin:0">Require approval for mutations</label></div>
+    </div>
+    <label>PII columns</label>
+    <div id="epii-list"></div>
+    <button class="secondary" type="button" onclick="addPiiTo('#epii-list')">+ Add PII column</button>
+    <div style="margin-top:18px;display:flex;gap:10px">
+      <button onclick="saveEdit()">Save changes</button>
+      <button class="secondary" onclick="closeEdit()">Cancel</button>
+    </div>
+    <div id="edit-err" class="err"></div>
+  </div>
+</div>
+
 <div id="approval-overlay" class="overlay" style="display:none">
   <div class="modal">
     <h2 id="approval-title">Approval required</h2>
@@ -103,6 +123,8 @@
 <script>
 const $ = s => document.querySelector(s);
 const actions = ["hash","redact"];
+let connsCache = [];
+let editId = null;
 
 // req wraps fetch and bounces to the login page when the session expires.
 async function req(url, opts) {
@@ -111,7 +133,7 @@ async function req(url, opts) {
   return res;
 }
 
-function addPii(name="", table="", action="hash") {
+function addPiiTo(sel, name="", table="", action="hash") {
   const div = document.createElement("div");
   div.className = "pii";
   div.innerHTML = `
@@ -119,15 +141,17 @@ function addPii(name="", table="", action="hash") {
     <input type="text" placeholder="table (optional)" value="${esc(table)}" data-k="table">
     <select data-k="action">${actions.map(a=>`<option ${a===action?"selected":""}>${a}</option>`).join("")}</select>
     <button class="danger" type="button" onclick="this.parentNode.remove()">×</button>`;
-  $("#pii-list").appendChild(div);
+  $(sel).appendChild(div);
 }
+function addPii(){ addPiiTo("#pii-list"); }
 
-function gatherPii() {
-  return [...document.querySelectorAll("#pii-list .pii")].map(d => {
+function gatherPiiFrom(sel) {
+  return [...document.querySelectorAll(sel+" .pii")].map(d => {
     const g = k => d.querySelector(`[data-k=${k}]`).value.trim();
     return { name:g("name"), table:g("table"), action:g("action") };
   }).filter(r => r.name);
 }
+function gatherPii(){ return gatherPiiFrom("#pii-list"); }
 
 function esc(s){ return (s||"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 
@@ -159,6 +183,37 @@ async function rotate(id) {
   if (res.ok) load();
 }
 
+function edit(id) {
+  const c = connsCache.find(x => x.id === id);
+  if (!c) return;
+  editId = id;
+  $("#edit-target").textContent = c.agent_username;
+  $("#e-name").value = c.name || "";
+  $("#e-maxrows").value = c.max_rows || 0;
+  $("#e-gate").checked = !!c.gate_mutations;
+  $("#epii-list").innerHTML = "";
+  (c.pii_rules || []).forEach(r => addPiiTo("#epii-list", r.name, r.table, r.action));
+  $("#edit-err").textContent = "";
+  $("#edit-overlay").style.display = "flex";
+}
+
+function closeEdit() { editId = null; $("#edit-overlay").style.display = "none"; }
+
+async function saveEdit() {
+  if (editId == null) return;
+  $("#edit-err").textContent = "";
+  const body = {
+    name: $("#e-name").value.trim(),
+    max_rows: parseInt($("#e-maxrows").value || "0", 10),
+    gate_mutations: $("#e-gate").checked,
+    pii_rules: gatherPiiFrom("#epii-list"),
+  };
+  const res = await req(`/api/connections/${editId}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  if (!res.ok) { const d = await res.json().catch(()=>({})); $("#edit-err").textContent = d.error || "failed"; return; }
+  closeEdit();
+  load();
+}
+
 async function del(id, name) {
   if (!confirm(`Delete connection "${name}"?`)) return;
   await req(`/api/connections/${id}`, {method:"DELETE"});
@@ -168,6 +223,7 @@ async function del(id, name) {
 async function load() {
   const res = await req("/api/connections");
   const conns = await res.json();
+  connsCache = conns;
   const rows = $("#rows");
   if (!conns.length) { rows.innerHTML = `<tr><td colspan="6" class="empty">No connections yet — create one above.</td></tr>`; return; }
   rows.innerHTML = conns.map(c => {
@@ -185,6 +241,7 @@ async function load() {
       <td>${c.max_rows||"∞"} rows<br>${c.gate_mutations?"gated":"open"}</td>
       <td>${(c.pii_rules||[]).map(r=>`<span class="tag">${esc(r.name)}:${esc(r.action)}</span>`).join("")||'<span class="muted">none</span>'}</td>
       <td class="actions">
+        <button class="secondary" onclick="edit(${c.id})">Edit</button>
         <button class="secondary" onclick="rotate(${c.id})">Rotate</button>
         <button class="danger" onclick="del(${c.id}, ${JSON.stringify(c.name)})">Delete</button>
       </td>

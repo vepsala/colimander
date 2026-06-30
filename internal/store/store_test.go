@@ -135,6 +135,45 @@ func TestAgentPasswordHiddenWithoutSecret(t *testing.T) {
 	}
 }
 
+func TestUpdatePolicyFields(t *testing.T) {
+	st := openTest(t)
+	conn, _, err := st.Create(CreateInput{
+		Name: "billing", UpstreamURL: "postgres://u:p@h/d",
+		MaxRows: 1000, GateMutations: true,
+		PIIRules: []policy.PIIRule{{Name: "email", Action: "hash"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = st.Update(conn.ID, UpdateInput{
+		Name: "billing-prod", MaxRows: 50, GateMutations: false,
+		PIIRules: []policy.PIIRule{{Name: "ssn", Table: "users", Action: "redact"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := st.GetByUsername(conn.AgentUsername)
+	if got.Name != "billing-prod" || got.MaxRows != 50 || got.GateMutations {
+		t.Errorf("fields not updated: %+v", got)
+	}
+	if len(got.PIIRules) != 1 || got.PIIRules[0].Name != "ssn" || got.PIIRules[0].Action != "redact" {
+		t.Errorf("pii rules not updated: %+v", got.PIIRules)
+	}
+	// The agent username (credential identity) must not change on edit.
+	if got.AgentUsername != conn.AgentUsername {
+		t.Error("update must not change the agent username")
+	}
+
+	if err := st.Update(9999, UpdateInput{Name: "x"}); err != ErrNotFound {
+		t.Errorf("updating a missing connection should return ErrNotFound, got %v", err)
+	}
+	if err := st.Update(conn.ID, UpdateInput{Name: "  "}); err == nil {
+		t.Error("blank name should error")
+	}
+}
+
 func TestValidationErrors(t *testing.T) {
 	st := openTest(t)
 	if _, _, err := st.Create(CreateInput{UpstreamURL: "x"}); err == nil {

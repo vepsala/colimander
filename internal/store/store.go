@@ -250,6 +250,40 @@ func (s *Store) Rotate(id int64) (string, error) {
 	return password, nil
 }
 
+// UpdateInput holds the editable fields of a connection. Credentials and the
+// upstream URL are not editable here.
+type UpdateInput struct {
+	Name          string
+	MaxRows       int
+	GateMutations bool
+	PIIRules      []policy.PIIRule
+}
+
+// Update changes a connection's policy fields (name, row limit, mutation
+// gating, PII rules). Returns ErrNotFound if no connection has that id.
+func (s *Store) Update(id int64, in UpdateInput) error {
+	if strings.TrimSpace(in.Name) == "" {
+		return errors.New("name is required")
+	}
+	if in.PIIRules == nil {
+		in.PIIRules = []policy.PIIRule{}
+	}
+	rulesJSON, err := json.Marshal(in.PIIRules)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.Exec(`
+UPDATE connections SET name = ?, max_rows = ?, gate_mutations = ?, pii_rules = ? WHERE id = ?`,
+		in.Name, in.MaxRows, boolToInt(in.GateMutations), string(rulesJSON), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Delete removes a connection.
 func (s *Store) Delete(id int64) error {
 	res, err := s.db.Exec(`DELETE FROM connections WHERE id = ?`, id)
