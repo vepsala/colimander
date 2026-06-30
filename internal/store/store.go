@@ -4,7 +4,10 @@
 package store
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -32,6 +35,11 @@ type Connection struct {
 	GateMutations bool             `json:"gate_mutations"`
 	PIIRules      []policy.PIIRule `json:"pii_rules"`
 	CreatedAt     time.Time        `json:"created_at"`
+	// AgentPassword is the plaintext agent password, decrypted for display.
+	// It is empty when no secret is set or when the stored ciphertext can no
+	// longer be decrypted (e.g. the admin token was rotated) — rotate the
+	// connection to mint a fresh, displayable password.
+	AgentPassword string `json:"agent_password,omitempty"`
 
 	passwordHash string
 }
@@ -47,7 +55,58 @@ type CreateInput struct {
 
 // Store wraps the SQLite database.
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	aead cipher.AEAD // nil when no secret is set; gates password encryption
+}
+
+// UseSecret derives a symmetric key from secret (the admin token) and uses it
+// to encrypt agent passwords at rest. Pass "" to disable storage of
+// re-displayable passwords. Rotating the secret renders previously stored
+// passwords undecryptable — by design, they become unrecoverable.
+func (s *Store) UseSecret(secret string) {
+	if secret == "" {
+		s.aead = nil
+		return
+	}
+	sum := sha256.Sum256([]byte("pgproxy:agent-password:v1:" + secret))
+	block, err := aes.NewCipher(sum[:]) // 32-byte key → AES-256
+	if err != nil {
+		s.aead = nil
+		return
+	}
+	s.aead, _ = cipher.NewGCM(block)
+}
+
+// encrypt seals plaintext as base64(nonce||ciphertext). Returns "" when no
+// secret is set or plaintext is empty.
+func (s *Store) encrypt(plaintext string) (string, error) {
+	if s.aead == nil || plaintext == "" {
+		return "", nil
+	}
+	nonce := make([]byte, s.aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	sealed := s.aead.Seal(nonce, nonce, []byte(plaintext), nil)
+	return base64.RawStdEncoding.EncodeToString(sealed), nil
+}
+
+// decrypt reverses encrypt. Returns "" if the secret is absent or the
+// ciphertext can no longer be authenticated (e.g. the admin token changed).
+func (s *Store) decrypt(enc string) string {
+	if s.aead == nil || enc == "" {
+		return ""
+	}
+	raw, err := base64.RawStdEncoding.DecodeString(enc)
+	if err != nil || len(raw) < s.aead.NonceSize() {
+		return ""
+	}
+	nonce, ct := raw[:s.aead.NonceSize()], raw[s.aead.NonceSize():]
+	pt, err := s.aead.Open(nil, nonce, ct, nil)
+	if err != nil {
+		return ""
+	}
+	return string(pt)
 }
 
 // Open opens (and migrates) the registry at path.
@@ -69,19 +128,27 @@ func Open(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) migrate() error {
-	_, err := s.db.Exec(`
+	if _, err := s.db.Exec(`
 CREATE TABLE IF NOT EXISTS connections (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   name                TEXT    NOT NULL,
   agent_username      TEXT    NOT NULL UNIQUE,
   agent_password_hash TEXT    NOT NULL,
+  agent_password_enc  TEXT    NOT NULL DEFAULT '',
   upstream_url        TEXT    NOT NULL,
   max_rows            INTEGER NOT NULL DEFAULT 1000,
   gate_mutations      INTEGER NOT NULL DEFAULT 1,
   pii_rules           TEXT    NOT NULL DEFAULT '[]',
   created_at          TEXT    NOT NULL
-);`)
-	return err
+);`); err != nil {
+		return err
+	}
+	// Add agent_password_enc to registries created before encrypted display.
+	if _, err := s.db.Exec(`ALTER TABLE connections ADD COLUMN agent_password_enc TEXT NOT NULL DEFAULT ''`); err != nil &&
+		!strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+		return err
+	}
+	return nil
 }
 
 // Create inserts a new connection, generating an agent username and password.
@@ -109,6 +176,10 @@ func (s *Store) Create(in CreateInput) (*Connection, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	encPassword, err := s.encrypt(password)
+	if err != nil {
+		return nil, "", err
+	}
 
 	createdAt := time.Now().UTC()
 
@@ -122,9 +193,9 @@ func (s *Store) Create(in CreateInput) (*Connection, string, error) {
 		}
 		username = slugify(in.Name) + "_" + strings.ToLower(suffix[:6])
 		res, err := s.db.Exec(`
-INSERT INTO connections (name, agent_username, agent_password_hash, upstream_url, max_rows, gate_mutations, pii_rules, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			in.Name, username, string(hash), in.UpstreamURL, in.MaxRows, boolToInt(in.GateMutations), string(rulesJSON), createdAt.Format(time.RFC3339Nano))
+INSERT INTO connections (name, agent_username, agent_password_hash, agent_password_enc, upstream_url, max_rows, gate_mutations, pii_rules, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			in.Name, username, string(hash), encPassword, in.UpstreamURL, in.MaxRows, boolToInt(in.GateMutations), string(rulesJSON), createdAt.Format(time.RFC3339Nano))
 		if err != nil {
 			if isUniqueViolation(err) {
 				continue
@@ -150,6 +221,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		GateMutations: in.GateMutations,
 		PIIRules:      in.PIIRules,
 		CreatedAt:     createdAt,
+		AgentPassword: password,
 		passwordHash:  string(hash),
 	}, password, nil
 }
@@ -164,7 +236,11 @@ func (s *Store) Rotate(id int64) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	res, err := s.db.Exec(`UPDATE connections SET agent_password_hash = ? WHERE id = ?`, string(hash), id)
+	encPassword, err := s.encrypt(password)
+	if err != nil {
+		return "", err
+	}
+	res, err := s.db.Exec(`UPDATE connections SET agent_password_hash = ?, agent_password_enc = ? WHERE id = ?`, string(hash), encPassword, id)
 	if err != nil {
 		return "", err
 	}
@@ -186,10 +262,11 @@ func (s *Store) Delete(id int64) error {
 	return nil
 }
 
-// List returns all connections (without password material).
+// List returns all connections. AgentPassword is decrypted for display when a
+// secret is set and the stored ciphertext is still valid; otherwise it is "".
 func (s *Store) List() ([]Connection, error) {
 	rows, err := s.db.Query(`
-SELECT id, name, agent_username, upstream_url, max_rows, gate_mutations, pii_rules, created_at
+SELECT id, name, agent_username, agent_password_enc, upstream_url, max_rows, gate_mutations, pii_rules, created_at
 FROM connections ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -202,6 +279,8 @@ FROM connections ORDER BY id`)
 		if err != nil {
 			return nil, err
 		}
+		// scanConnection leaves the ciphertext in AgentPassword; decrypt it.
+		c.AgentPassword = s.decrypt(c.AgentPassword)
 		out = append(out, *c)
 	}
 	return out, rows.Err()
@@ -235,7 +314,7 @@ func scanConnection(sc scanner) (*Connection, error) {
 		rulesJSON string
 		createdAt string
 	)
-	if err := sc.Scan(&c.ID, &c.Name, &c.AgentUsername, &c.UpstreamURL, &c.MaxRows, &gate, &rulesJSON, &createdAt); err != nil {
+	if err := sc.Scan(&c.ID, &c.Name, &c.AgentUsername, &c.AgentPassword, &c.UpstreamURL, &c.MaxRows, &gate, &rulesJSON, &createdAt); err != nil {
 		return nil, err
 	}
 	return finishScan(&c, gate, rulesJSON, createdAt)

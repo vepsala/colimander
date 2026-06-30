@@ -110,6 +110,10 @@ func runServe(args []string) {
 	}
 
 	adminToken := os.Getenv("PGPROXY_ADMIN_TOKEN")
+	// Agent passwords are stored encrypted under a key derived from the admin
+	// token, so they can be re-displayed in the dashboard. Rotating the token
+	// makes previously stored passwords unrecoverable (rotate to re-mint).
+	st.UseSecret(adminToken)
 	startAdmin := true
 	switch {
 	case adminToken != "":

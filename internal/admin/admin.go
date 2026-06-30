@@ -184,31 +184,40 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(indexHTML)
 }
 
-// connectionDTO is the JSON shape returned for a connection. Secrets (password,
-// upstream credentials) are only included where explicitly noted.
+// connectionDTO is the JSON shape returned for a connection. This admin API is
+// token-gated; it returns the agent password and full connection strings so
+// they can be copied to agents at any time (these credentials are revocable).
 type connectionDTO struct {
 	ID               int64            `json:"id"`
 	Name             string           `json:"name"`
 	AgentUsername    string           `json:"agent_username"`
+	AgentPassword    string           `json:"agent_password"`
 	UpstreamURL      string           `json:"upstream_url"`
 	MaxRows          int              `json:"max_rows"`
 	GateMutations    bool             `json:"gate_mutations"`
 	PIIRules         []policy.PIIRule `json:"pii_rules"`
 	CreatedAt        time.Time        `json:"created_at"`
-	ConnectionString string           `json:"connection_string"` // password placeholder
+	ConnectionString string           `json:"connection_string"`
 }
 
 func (s *Server) toDTO(c store.Connection) connectionDTO {
+	// Connections created before plaintext storage have no password to show;
+	// leave the string empty so the UI can prompt for a rotate.
+	cs := ""
+	if c.AgentPassword != "" {
+		cs = s.connString(c.AgentUsername, c.AgentPassword)
+	}
 	return connectionDTO{
 		ID:               c.ID,
 		Name:             c.Name,
 		AgentUsername:    c.AgentUsername,
-		UpstreamURL:      maskURLPassword(c.UpstreamURL),
+		AgentPassword:    c.AgentPassword,
+		UpstreamURL:      c.UpstreamURL,
 		MaxRows:          c.MaxRows,
 		GateMutations:    c.GateMutations,
 		PIIRules:         c.PIIRules,
 		CreatedAt:        c.CreatedAt,
-		ConnectionString: s.connString(c.AgentUsername, "<password>"),
+		ConnectionString: cs,
 	}
 }
 
@@ -233,12 +242,6 @@ type createRequest struct {
 	PIIRules      []policy.PIIRule `json:"pii_rules"`
 }
 
-type secretResponse struct {
-	connectionDTO
-	AgentPassword    string `json:"agent_password"`    // shown once
-	ConnectionString string `json:"connection_string"` // includes the password
-}
-
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var req createRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -259,18 +262,16 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		in.GateMutations = *req.GateMutations
 	}
 
-	conn, password, err := s.store.Create(in)
+	conn, _, err := s.store.Create(in)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	s.log.Info("connection created", "name", conn.Name, "username", conn.AgentUsername)
 
-	writeJSON(w, http.StatusCreated, secretResponse{
-		connectionDTO:    s.toDTO(*conn),
-		AgentPassword:    password,
-		ConnectionString: s.connString(conn.AgentUsername, password),
-	})
+	// conn carries the freshly minted plaintext password, so toDTO renders the
+	// full connection string just like a subsequent list call would.
+	writeJSON(w, http.StatusCreated, s.toDTO(*conn))
 }
 
 func (s *Server) handleRotate(w http.ResponseWriter, r *http.Request) {
@@ -379,16 +380,4 @@ func advertiseAddr(listen string) string {
 		host = "127.0.0.1"
 	}
 	return net.JoinHostPort(host, port)
-}
-
-// maskURLPassword replaces the password in a postgres URL with "***".
-func maskURLPassword(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil || u.User == nil {
-		return raw
-	}
-	if _, hasPw := u.User.Password(); hasPw {
-		u.User = url.UserPassword(u.User.Username(), "***")
-	}
-	return u.String()
 }

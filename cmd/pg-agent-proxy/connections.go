@@ -47,6 +47,8 @@ func openStore(cfgPath string) (*store.Store, *config.Config) {
 		fmt.Fprintln(os.Stderr, "open registry failed:", err)
 		os.Exit(1)
 	}
+	// Same key the server uses, so `connections list` can decrypt passwords.
+	st.UseSecret(os.Getenv("PGPROXY_ADMIN_TOKEN"))
 	return st, cfg
 }
 

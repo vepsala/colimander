@@ -89,6 +89,52 @@ func TestDeleteAndMissing(t *testing.T) {
 	}
 }
 
+func TestAgentPasswordEncryptedDisplay(t *testing.T) {
+	st := openTest(t)
+	st.UseSecret("admin-token-1")
+
+	conn, password, err := st.Create(CreateInput{Name: "x", UpstreamURL: "postgres://u:p@h/d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// With the right secret, List re-displays the plaintext password.
+	conns, err := st.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conns) != 1 || conns[0].AgentPassword != password {
+		t.Fatalf("expected decrypted password %q, got %q", password, conns[0].AgentPassword)
+	}
+
+	// Rotating the admin token makes the stored password unrecoverable, but the
+	// agent credential itself still authenticates (bcrypt hash is untouched).
+	st.UseSecret("admin-token-2")
+	conns, err = st.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conns[0].AgentPassword != "" {
+		t.Errorf("password should be unrecoverable after token change, got %q", conns[0].AgentPassword)
+	}
+	got, _ := st.GetByUsername(conn.AgentUsername)
+	if !VerifyPassword(got, password) {
+		t.Error("agent credential must keep working after admin token change")
+	}
+}
+
+func TestAgentPasswordHiddenWithoutSecret(t *testing.T) {
+	st := openTest(t) // no UseSecret
+	_, _, err := st.Create(CreateInput{Name: "x", UpstreamURL: "postgres://u:p@h/d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conns, _ := st.List()
+	if conns[0].AgentPassword != "" {
+		t.Errorf("no password should be displayed without a secret, got %q", conns[0].AgentPassword)
+	}
+}
+
 func TestValidationErrors(t *testing.T) {
 	st := openTest(t)
 	if _, _, err := st.Create(CreateInput{UpstreamURL: "x"}); err == nil {
