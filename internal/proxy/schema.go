@@ -110,6 +110,8 @@ func actionName(a policy.Action) string {
 		return "hash"
 	case policy.ActionRedact:
 		return "redact"
+	case policy.ActionLabel:
+		return "label"
 	default:
 		return ""
 	}

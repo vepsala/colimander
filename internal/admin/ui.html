@@ -35,6 +35,8 @@
   .tag { display:inline-block; background:#1d2530; border:1px solid var(--line); border-radius:4px; padding:0 6px; font-size:11px; margin:0 4px 4px 0; }
   .empty { color:var(--muted); padding:14px 10px; }
   .err { color:var(--danger); margin-top:8px; }
+  .hint { color:var(--muted); font-size:11px; margin:2px 0 10px; }
+  .hint code { font-size:11px; padding:0 4px; }
   /* agent connection string row under each connection */
   .mainrow td { border-bottom:0; padding-bottom:4px; }
   .csrow td { padding-top:0; }
@@ -78,6 +80,7 @@
       <div class="check"><input id="f-gate" type="checkbox" checked><label style="margin:0">Require approval for mutations</label></div>
     </div>
     <label>PII columns</label>
+    <div class="hint"><b>hash</b> = salted digest (same input → same hash) · <b>redact</b> = fixed string · <b>label</b> = readable per-row placeholder like <code>name-1</code></div>
     <div id="pii-list"></div>
     <div class="pii-actions">
       <button class="secondary" type="button" onclick="addPii()">+ Add PII column</button>
@@ -107,6 +110,7 @@
       <div class="check"><input id="e-gate" type="checkbox"><label style="margin:0">Require approval for mutations</label></div>
     </div>
     <label>PII columns</label>
+    <div class="hint"><b>hash</b> = salted digest · <b>redact</b> = fixed string · <b>label</b> = readable per-row placeholder like <code>name-1</code></div>
     <div id="epii-list"></div>
     <div class="pii-actions">
       <button class="secondary" type="button" onclick="addPiiTo('#epii-list')">+ Add PII column</button>
@@ -131,7 +135,7 @@
 
 <script>
 const $ = s => document.querySelector(s);
-const actions = ["hash","redact"];
+const actions = ["hash","redact","label"];
 let connsCache = [];
 let editId = null;
 

@@ -5,6 +5,7 @@ package policy
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
 	"strings"
 )
 
@@ -19,6 +20,10 @@ const (
 	ActionHash
 	// ActionRedact replaces the value with the configured redaction string.
 	ActionRedact
+	// ActionLabel replaces the value with a readable per-row placeholder of the
+	// form "<column>-<rownumber>" (e.g. "name-4"). Unlike hashing it is not
+	// stable across queries, but it keeps results legible and distinct per row.
+	ActionLabel
 )
 
 // PIIRule is a single anonymization rule for a connection.
@@ -69,6 +74,8 @@ func ParseAction(s string) Action {
 		return ActionHash
 	case "redact":
 		return ActionRedact
+	case "label":
+		return ActionLabel
 	default:
 		return ActionNone
 	}
@@ -92,15 +99,16 @@ func (p *Policy) ActionFor(columnName string) Action {
 }
 
 // AnonymizeValue applies the column's action to a raw value, honoring the
-// column's PostgreSQL type OID.
+// column's PostgreSQL type OID. column and rowNumber are used only by
+// ActionLabel to build a per-row placeholder ("<column>-<rowNumber>").
 //
 //   - A nil value (SQL NULL) is returned unchanged.
 //   - For text-family columns the transformed bytes are valid in both the text
-//     and binary wire formats, so hashing/redaction is applied directly.
-//   - For non-text columns (numbers, dates, ...) a hash/redact string cannot be
+//     and binary wire formats, so the transform is applied directly.
+//   - For non-text columns (numbers, dates, ...) a replacement string cannot be
 //     safely encoded, so the value is replaced with NULL. This is a deliberate,
-//     safe default; keep PII in text columns to retain hashing.
-func (p *Policy) AnonymizeValue(action Action, typeOID uint32, value []byte) []byte {
+//     safe default; keep PII in text columns to retain anonymization.
+func (p *Policy) AnonymizeValue(action Action, typeOID uint32, value []byte, column string, rowNumber int) []byte {
 	if value == nil || action == ActionNone {
 		return value
 	}
@@ -120,6 +128,8 @@ func (p *Policy) AnonymizeValue(action Action, typeOID uint32, value []byte) []b
 		out := make([]byte, len(p.redact))
 		copy(out, p.redact)
 		return out
+	case ActionLabel:
+		return []byte(column + "-" + strconv.Itoa(rowNumber))
 	default:
 		return value
 	}

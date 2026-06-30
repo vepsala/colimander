@@ -74,6 +74,7 @@ func (s *session) streamResult(ctx context.Context, rr *pgconn.ResultReader, sen
 	var rows [][][]byte
 	for rr.NextRow() {
 		vals := rr.Values()
+		rowNumber := len(rows) + 1 // 1-based, used by ActionLabel ("name-1", ...)
 		row := make([][]byte, len(vals))
 		for i, v := range vals {
 			switch {
@@ -84,7 +85,7 @@ func (s *session) streamResult(ctx context.Context, rr *pgconn.ResultReader, sen
 				copy(cp, v)
 				row[i] = cp
 			default:
-				row[i] = s.policy.AnonymizeValue(actions[i], fds[i].DataTypeOID, v)
+				row[i] = s.policy.AnonymizeValue(actions[i], fds[i].DataTypeOID, v, fds[i].Name, rowNumber)
 			}
 		}
 		rows = append(rows, row)
