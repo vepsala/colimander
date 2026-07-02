@@ -26,6 +26,21 @@ makes them safe to hand to an agent (or a human doing investigation):
 
 ## Quick start
 
+Run it entirely locally — no config file, no token, nothing to deploy:
+
+```bash
+make dev          # builds, then serves on localhost with dashboard approvals
+```
+
+That's the whole server: the proxy on `127.0.0.1:6432` and the admin UI on
+`http://127.0.0.1:6480` (open, because it's loopback), with a `./pgproxy.db`
+registry created on first run. This is all a solo developer needs — run it next
+to your agent on your own machine. (Under the hood `make dev` is just
+`PGPROXY_APPROVAL_MODE=dashboard pg-agent-proxy serve`; every setting has a safe
+localhost default.)
+
+For a persistent or shared setup, use a config file instead:
+
 ```bash
 go build ./cmd/pg-agent-proxy
 
@@ -33,9 +48,13 @@ cp config.example.yaml config.yaml      # set hash_salt + approval
 ./pg-agent-proxy serve -config config.yaml
 ```
 
-`serve` starts the proxy (`:6432`) and the admin UI (`http://127.0.0.1:6480`).
 Set a master token to protect the admin surface (see [Admin
-authentication](#admin-authentication)); on loopback it may run open.
+authentication](#admin-authentication)); on loopback it may run open. Deploy it
+to a server (see [Deploying to Fly.io](#deploying-to-flyio)) when the consumers
+aren't on your machine — remote/cloud agents, CI, or teammates — or when you
+want the real database credentials custodied in one place instead of on every
+laptop.
+
 Open the UI to create a connection, or use the CLI:
 
 ```bash
@@ -109,7 +128,7 @@ Process-wide settings live in `config.yaml` (see
 | `database` | path to the SQLite registry |
 | `hash_salt` | secret salt mixed into every PII hash |
 | `redact_string` | replacement for `redact` columns |
-| `approval.mode` | `http`, `auto_approve`, or `auto_deny` |
+| `approval.mode` | `dashboard`, `http`, `auto_approve`, or `auto_deny` |
 | `approval.url` / `.timeout` | endpoint and deadline for `http` mode |
 
 ### Admin authentication
@@ -247,8 +266,6 @@ anonymize columns and enforce the row limit before any data is sent.
 
 ## Limitations (v1)
 
-- **No TLS termination.** `SSLRequest` is declined; run the proxy on a trusted
-  network or behind a TLS-terminating tunnel. Upstream TLS works normally.
 - **PII matching is by column name**, applied across all tables. A rule's
   optional `table` is used only for `detect-pii` output and schema annotation,
   not to narrow which streamed rows get anonymized (deliberately conservative).
