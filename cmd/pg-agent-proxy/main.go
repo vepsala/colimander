@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/kotisivukamu/pg-agent-proxy/internal/admin"
 	"github.com/kotisivukamu/pg-agent-proxy/internal/approval"
@@ -125,6 +126,15 @@ func runServe(args []string) {
 		startAdmin = false
 	}
 
+	// Sweep expired connections periodically (and once at startup). Expired
+	// credentials already fail auth via GetByUsername; this reclaims the rows.
+	if n, err := st.DeleteExpired(time.Now().UTC()); err != nil {
+		log.Warn("initial expiry sweep failed", "err", err)
+	} else if n > 0 {
+		log.Info("swept expired connections", "count", n)
+	}
+	go sweepExpired(ctx, st, log)
+
 	var wg sync.WaitGroup
 	if startAdmin {
 		wg.Add(1)
@@ -147,6 +157,24 @@ func runServe(args []string) {
 		stop()
 	}
 	wg.Wait()
+}
+
+// sweepExpired deletes expired connections once a minute until ctx is done.
+func sweepExpired(ctx context.Context, st *store.Store, log *slog.Logger) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n, err := st.DeleteExpired(time.Now().UTC()); err != nil {
+				log.Warn("expiry sweep failed", "err", err)
+			} else if n > 0 {
+				log.Info("swept expired connections", "count", n)
+			}
+		}
+	}
 }
 
 // isLoopback reports whether a listen address binds only to the loopback

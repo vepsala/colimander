@@ -3,6 +3,7 @@ package store
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/kotisivukamu/pg-agent-proxy/internal/policy"
 )
@@ -171,6 +172,88 @@ func TestUpdatePolicyFields(t *testing.T) {
 	}
 	if err := st.Update(conn.ID, UpdateInput{Name: "  "}); err == nil {
 		t.Error("blank name should error")
+	}
+}
+
+func TestExpiryFailsClosedAndSweeps(t *testing.T) {
+	st := openTest(t)
+	now := time.Now().UTC()
+
+	// A connection that expired a minute ago.
+	expired, _, err := st.Create(CreateInput{Name: "temp", UpstreamURL: "postgres://u:p@h/d", ExpiresAt: now.Add(-time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A connection expiring in an hour, and one that never expires.
+	live, _, err := st.Create(CreateInput{Name: "live", UpstreamURL: "postgres://u:p@h/d", ExpiresAt: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forever, _, err := st.Create(CreateInput{Name: "forever", UpstreamURL: "postgres://u:p@h/d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Auth fails closed for the expired one, even before sweeping.
+	if _, err := st.GetByUsername(expired.AgentUsername); err != ErrNotFound {
+		t.Errorf("expired connection should not authenticate, got %v", err)
+	}
+	if _, err := st.GetByUsername(live.AgentUsername); err != nil {
+		t.Errorf("live connection should authenticate, got %v", err)
+	}
+
+	// Sweep removes only the expired row.
+	n, err := st.DeleteExpired(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 swept, got %d", n)
+	}
+	conns, _ := st.List()
+	if len(conns) != 2 {
+		t.Errorf("expected 2 remaining connections, got %d", len(conns))
+	}
+	// The never-expiring one has a zero ExpiresAt and is not swept.
+	if _, err := st.GetByUsername(forever.AgentUsername); err != nil {
+		t.Errorf("never-expiring connection should survive, got %v", err)
+	}
+}
+
+func TestUpdateExpiryKeepClearSet(t *testing.T) {
+	st := openTest(t)
+	now := time.Now().UTC()
+	conn, _, err := st.Create(CreateInput{Name: "x", UpstreamURL: "postgres://u:p@h/d", ExpiresAt: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// SetExpiry=false leaves the existing expiry untouched.
+	if err := st.Update(conn.ID, UpdateInput{Name: "x2"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.GetByUsername(conn.AgentUsername)
+	if got.ExpiresAt.IsZero() {
+		t.Error("expiry should be preserved when SetExpiry is false")
+	}
+
+	// SetExpiry with zero time clears it (never expires).
+	if err := st.Update(conn.ID, UpdateInput{Name: "x3", SetExpiry: true}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = st.GetByUsername(conn.AgentUsername)
+	if !got.ExpiresAt.IsZero() {
+		t.Errorf("expiry should be cleared, got %v", got.ExpiresAt)
+	}
+
+	// SetExpiry with a future time sets it.
+	future := now.Add(2 * time.Hour)
+	if err := st.Update(conn.ID, UpdateInput{Name: "x4", SetExpiry: true, ExpiresAt: future}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = st.GetByUsername(conn.AgentUsername)
+	if got.ExpiresAt.IsZero() || got.ExpiresAt.Before(now.Add(time.Hour)) {
+		t.Errorf("expiry should be set to the future, got %v", got.ExpiresAt)
 	}
 }
 

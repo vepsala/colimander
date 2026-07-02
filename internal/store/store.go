@@ -35,6 +35,9 @@ type Connection struct {
 	GateMutations bool             `json:"gate_mutations"`
 	PIIRules      []policy.PIIRule `json:"pii_rules"`
 	CreatedAt     time.Time        `json:"created_at"`
+	// ExpiresAt is when the connection stops working and becomes eligible for
+	// sweeping. The zero value means the connection never expires.
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
 	// AgentPassword is the plaintext agent password, decrypted for display.
 	// It is empty when no secret is set or when the stored ciphertext can no
 	// longer be decrypted (e.g. the admin token was rotated) — rotate the
@@ -44,6 +47,11 @@ type Connection struct {
 	passwordHash string
 }
 
+// Expired reports whether the connection has a deadline that has passed.
+func (c *Connection) Expired(now time.Time) bool {
+	return !c.ExpiresAt.IsZero() && !now.Before(c.ExpiresAt)
+}
+
 // CreateInput holds the fields needed to create a connection.
 type CreateInput struct {
 	Name          string
@@ -51,6 +59,9 @@ type CreateInput struct {
 	MaxRows       int
 	GateMutations bool
 	PIIRules      []policy.PIIRule
+	// ExpiresAt, when non-zero, sets a hard deadline after which the connection
+	// stops authenticating and is swept.
+	ExpiresAt time.Time
 }
 
 // Store wraps the SQLite database.
@@ -139,16 +150,38 @@ CREATE TABLE IF NOT EXISTS connections (
   max_rows            INTEGER NOT NULL DEFAULT 1000,
   gate_mutations      INTEGER NOT NULL DEFAULT 1,
   pii_rules           TEXT    NOT NULL DEFAULT '[]',
-  created_at          TEXT    NOT NULL
+  created_at          TEXT    NOT NULL,
+  expires_at          TEXT    NOT NULL DEFAULT ''
 );`); err != nil {
 		return err
 	}
-	// Add agent_password_enc to registries created before encrypted display.
-	if _, err := s.db.Exec(`ALTER TABLE connections ADD COLUMN agent_password_enc TEXT NOT NULL DEFAULT ''`); err != nil &&
-		!strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
-		return err
+	// Add columns to registries created before they existed. SQLite ignores
+	// nothing here, so tolerate the "duplicate column" error on re-runs.
+	for _, col := range []string{
+		`ALTER TABLE connections ADD COLUMN agent_password_enc TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE connections ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := s.db.Exec(col); err != nil &&
+			!strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return err
+		}
 	}
 	return nil
+}
+
+// expiryLayout is a fixed-width UTC RFC3339 layout (always 9 fractional
+// digits). Unlike time.RFC3339Nano it never varies in length, so the stored
+// strings sort lexicographically — which is what DeleteExpired's SQL "<="
+// comparison relies on. It still parses cleanly with time.RFC3339Nano.
+const expiryLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+// formatExpiry renders an expiry timestamp for storage, or "" for a
+// never-expiring connection.
+func formatExpiry(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(expiryLayout)
 }
 
 // Create inserts a new connection, generating an agent username and password.
@@ -193,9 +226,9 @@ func (s *Store) Create(in CreateInput) (*Connection, string, error) {
 		}
 		username = slugify(in.Name) + "_" + strings.ToLower(suffix[:6])
 		res, err := s.db.Exec(`
-INSERT INTO connections (name, agent_username, agent_password_hash, agent_password_enc, upstream_url, max_rows, gate_mutations, pii_rules, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			in.Name, username, string(hash), encPassword, in.UpstreamURL, in.MaxRows, boolToInt(in.GateMutations), string(rulesJSON), createdAt.Format(time.RFC3339Nano))
+INSERT INTO connections (name, agent_username, agent_password_hash, agent_password_enc, upstream_url, max_rows, gate_mutations, pii_rules, created_at, expires_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			in.Name, username, string(hash), encPassword, in.UpstreamURL, in.MaxRows, boolToInt(in.GateMutations), string(rulesJSON), createdAt.Format(time.RFC3339Nano), formatExpiry(in.ExpiresAt))
 		if err != nil {
 			if isUniqueViolation(err) {
 				continue
@@ -221,6 +254,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		GateMutations: in.GateMutations,
 		PIIRules:      in.PIIRules,
 		CreatedAt:     createdAt,
+		ExpiresAt:     in.ExpiresAt,
 		AgentPassword: password,
 		passwordHash:  string(hash),
 	}, password, nil
@@ -257,10 +291,16 @@ type UpdateInput struct {
 	MaxRows       int
 	GateMutations bool
 	PIIRules      []policy.PIIRule
+	// SetExpiry gates whether ExpiresAt is applied. When false the stored
+	// expiry is left unchanged; when true, ExpiresAt is written (a zero value
+	// clears the expiry, making the connection never expire).
+	SetExpiry bool
+	ExpiresAt time.Time
 }
 
 // Update changes a connection's policy fields (name, row limit, mutation
-// gating, PII rules). Returns ErrNotFound if no connection has that id.
+// gating, PII rules, and optionally the expiry). Returns ErrNotFound if no
+// connection has that id.
 func (s *Store) Update(id int64, in UpdateInput) error {
 	if strings.TrimSpace(in.Name) == "" {
 		return errors.New("name is required")
@@ -272,9 +312,17 @@ func (s *Store) Update(id int64, in UpdateInput) error {
 	if err != nil {
 		return err
 	}
-	res, err := s.db.Exec(`
+
+	var res sql.Result
+	if in.SetExpiry {
+		res, err = s.db.Exec(`
+UPDATE connections SET name = ?, max_rows = ?, gate_mutations = ?, pii_rules = ?, expires_at = ? WHERE id = ?`,
+			in.Name, in.MaxRows, boolToInt(in.GateMutations), string(rulesJSON), formatExpiry(in.ExpiresAt), id)
+	} else {
+		res, err = s.db.Exec(`
 UPDATE connections SET name = ?, max_rows = ?, gate_mutations = ?, pii_rules = ? WHERE id = ?`,
-		in.Name, in.MaxRows, boolToInt(in.GateMutations), string(rulesJSON), id)
+			in.Name, in.MaxRows, boolToInt(in.GateMutations), string(rulesJSON), id)
+	}
 	if err != nil {
 		return err
 	}
@@ -296,11 +344,23 @@ func (s *Store) Delete(id int64) error {
 	return nil
 }
 
+// DeleteExpired removes every connection whose expiry is at or before now, and
+// returns how many were deleted.
+func (s *Store) DeleteExpired(now time.Time) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM connections WHERE expires_at != '' AND expires_at <= ?`,
+		now.UTC().Format(expiryLayout))
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // List returns all connections. AgentPassword is decrypted for display when a
 // secret is set and the stored ciphertext is still valid; otherwise it is "".
 func (s *Store) List() ([]Connection, error) {
 	rows, err := s.db.Query(`
-SELECT id, name, agent_username, agent_password_enc, upstream_url, max_rows, gate_mutations, pii_rules, created_at
+SELECT id, name, agent_username, agent_password_enc, upstream_url, max_rows, gate_mutations, pii_rules, created_at, expires_at
 FROM connections ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -322,11 +382,20 @@ FROM connections ORDER BY id`)
 
 // GetByUsername looks up a connection for authentication/routing. The returned
 // Connection carries the password hash for verification via VerifyPassword.
+// An expired connection is treated as not found, so auth fails closed even
+// before the sweeper removes it.
 func (s *Store) GetByUsername(username string) (*Connection, error) {
 	row := s.db.QueryRow(`
-SELECT id, name, agent_username, agent_password_hash, upstream_url, max_rows, gate_mutations, pii_rules, created_at
+SELECT id, name, agent_username, agent_password_hash, upstream_url, max_rows, gate_mutations, pii_rules, created_at, expires_at
 FROM connections WHERE agent_username = ?`, username)
-	return scanConnectionWithHash(row)
+	c, err := scanConnectionWithHash(row)
+	if err != nil {
+		return nil, err
+	}
+	if c.Expired(time.Now().UTC()) {
+		return nil, ErrNotFound
+	}
+	return c, nil
 }
 
 // VerifyPassword reports whether plaintext matches the connection's stored hash.
@@ -347,11 +416,12 @@ func scanConnection(sc scanner) (*Connection, error) {
 		gate      int
 		rulesJSON string
 		createdAt string
+		expiresAt string
 	)
-	if err := sc.Scan(&c.ID, &c.Name, &c.AgentUsername, &c.AgentPassword, &c.UpstreamURL, &c.MaxRows, &gate, &rulesJSON, &createdAt); err != nil {
+	if err := sc.Scan(&c.ID, &c.Name, &c.AgentUsername, &c.AgentPassword, &c.UpstreamURL, &c.MaxRows, &gate, &rulesJSON, &createdAt, &expiresAt); err != nil {
 		return nil, err
 	}
-	return finishScan(&c, gate, rulesJSON, createdAt)
+	return finishScan(&c, gate, rulesJSON, createdAt, expiresAt)
 }
 
 func scanConnectionWithHash(sc scanner) (*Connection, error) {
@@ -360,23 +430,29 @@ func scanConnectionWithHash(sc scanner) (*Connection, error) {
 		gate      int
 		rulesJSON string
 		createdAt string
+		expiresAt string
 	)
-	if err := sc.Scan(&c.ID, &c.Name, &c.AgentUsername, &c.passwordHash, &c.UpstreamURL, &c.MaxRows, &gate, &rulesJSON, &createdAt); err != nil {
+	if err := sc.Scan(&c.ID, &c.Name, &c.AgentUsername, &c.passwordHash, &c.UpstreamURL, &c.MaxRows, &gate, &rulesJSON, &createdAt, &expiresAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-	return finishScan(&c, gate, rulesJSON, createdAt)
+	return finishScan(&c, gate, rulesJSON, createdAt, expiresAt)
 }
 
-func finishScan(c *Connection, gate int, rulesJSON, createdAt string) (*Connection, error) {
+func finishScan(c *Connection, gate int, rulesJSON, createdAt, expiresAt string) (*Connection, error) {
 	c.GateMutations = gate != 0
 	if err := json.Unmarshal([]byte(rulesJSON), &c.PIIRules); err != nil {
 		return nil, fmt.Errorf("decode pii_rules: %w", err)
 	}
 	if t, err := time.Parse(time.RFC3339Nano, createdAt); err == nil {
 		c.CreatedAt = t
+	}
+	if expiresAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, expiresAt); err == nil {
+			c.ExpiresAt = t
+		}
 	}
 	return c, nil
 }

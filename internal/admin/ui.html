@@ -75,6 +75,7 @@
     </div>
     <div class="row">
       <div><label>Max rows before approval</label><input id="f-maxrows" type="text" value="1000"></div>
+      <div><label>Expires in (optional)</label><input id="f-ttl" type="text" placeholder="e.g. 3h, 7d — blank = never"></div>
       <div class="check"><input id="f-gate" type="checkbox" checked><label style="margin:0">Require approval for mutations</label></div>
     </div>
     <label>PII columns</label>
@@ -106,7 +107,13 @@
       <div><label>Max rows before approval</label><input id="e-maxrows" type="text"></div>
       <div class="check"><input id="e-gate" type="checkbox"><label style="margin:0">Require approval for mutations</label></div>
     </div>
-    <label>PII columns</label>
+    <label>Expiry</label>
+    <div class="hint">Currently: <span id="e-exp-current">no expiry</span></div>
+    <div class="check"><input id="e-exp-change" type="checkbox" onchange="$('#e-exp-fields').style.display = this.checked ? 'block' : 'none'"><label style="margin:0">Change expiry</label></div>
+    <div id="e-exp-fields" style="display:none;margin-top:6px">
+      <input id="e-ttl" type="text" placeholder="e.g. 3h, 7d — blank = no expiry">
+    </div>
+    <label style="margin-top:12px">PII columns</label>
     <div id="epii-list"></div>
     <div class="pii-actions">
       <button class="secondary" type="button" onclick="addPiiTo('#epii-list')">+ Add PII column</button>
@@ -204,6 +211,18 @@ async function detectPiiEdit() {
 
 function esc(s){ return (s||"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 
+// expiryText renders an ISO expiry timestamp as a short remaining-time string.
+function expiryText(iso){
+  if(!iso) return "no expiry";
+  const ms = new Date(iso) - Date.now();
+  if(ms <= 0) return "expired";
+  const mins = Math.floor(ms/60000);
+  if(mins < 60) return `expires in ${mins}m`;
+  const hrs = Math.floor(mins/60), rem = mins%60;
+  if(hrs < 48) return `expires in ${hrs}h${rem?` ${rem}m`:""}`;
+  return `expires in ${Math.floor(hrs/24)}d`;
+}
+
 async function create() {
   $("#create-err").textContent = "";
   const body = {
@@ -212,11 +231,12 @@ async function create() {
     max_rows: parseInt($("#f-maxrows").value || "0", 10),
     gate_mutations: $("#f-gate").checked,
     pii_rules: gatherPii(),
+    ttl: $("#f-ttl").value.trim(),
   };
   const res = await req("/api/connections", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
   const data = await res.json();
   if (!res.ok) { $("#create-err").textContent = data.error || "failed"; return; }
-  $("#f-name").value = ""; $("#f-upstream").value = ""; $("#pii-list").innerHTML = "";
+  $("#f-name").value = ""; $("#f-upstream").value = ""; $("#f-ttl").value = ""; $("#pii-list").innerHTML = "";
   $("#detect-status").textContent = "";
   load();
 }
@@ -243,6 +263,10 @@ function edit(id) {
   $("#e-gate").checked = !!c.gate_mutations;
   $("#epii-list").innerHTML = "";
   (c.pii_rules || []).forEach(r => addPiiTo("#epii-list", r.name, r.table, r.action));
+  $("#e-exp-current").textContent = expiryText(c.expires_at);
+  $("#e-exp-change").checked = false;
+  $("#e-ttl").value = "";
+  $("#e-exp-fields").style.display = "none";
   $("#edit-err").textContent = "";
   $("#edit-detect-status").textContent = "";
   $("#edit-overlay").style.display = "flex";
@@ -259,6 +283,9 @@ async function saveEdit() {
     gate_mutations: $("#e-gate").checked,
     pii_rules: gatherPiiFrom("#epii-list"),
   };
+  // Only touch the expiry when the operator opted in, so editing other fields
+  // leaves it unchanged. Blank ttl = clear (no expiry); a value = now+ttl.
+  if ($("#e-exp-change").checked) body.ttl = $("#e-ttl").value.trim();
   const res = await req(`/api/connections/${editId}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
   if (!res.ok) { const d = await res.json().catch(()=>({})); $("#edit-err").textContent = d.error || "failed"; return; }
   closeEdit();
@@ -289,7 +316,7 @@ async function load() {
       <td>${esc(c.name)}</td>
       <td><code>${esc(c.agent_username)}</code></td>
       <td class="muted"><span class="upstream">${esc(c.upstream_url)}</span></td>
-      <td>${c.max_rows||"∞"} rows<br>${c.gate_mutations?"gated":"open"}</td>
+      <td>${c.max_rows||"∞"} rows<br>${c.gate_mutations?"gated":"open"}<br><span class="muted">${expiryText(c.expires_at)}</span></td>
       <td>${(c.pii_rules||[]).map(r=>`<span class="tag">${esc(r.name)}:${esc(r.action)}</span>`).join("")||'<span class="muted">none</span>'}</td>
       <td class="actions">
         <button class="secondary" onclick="edit(${c.id})">Edit</button>

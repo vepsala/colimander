@@ -201,6 +201,7 @@ type connectionDTO struct {
 	GateMutations    bool             `json:"gate_mutations"`
 	PIIRules         []policy.PIIRule `json:"pii_rules"`
 	CreatedAt        time.Time        `json:"created_at"`
+	ExpiresAt        *time.Time       `json:"expires_at"` // null = never expires
 	ConnectionString string           `json:"connection_string"`
 }
 
@@ -210,6 +211,10 @@ func (s *Server) toDTO(c store.Connection) connectionDTO {
 	cs := ""
 	if c.AgentPassword != "" {
 		cs = s.connString(c.AgentUsername, c.AgentPassword)
+	}
+	var expiresAt *time.Time
+	if !c.ExpiresAt.IsZero() {
+		expiresAt = &c.ExpiresAt
 	}
 	return connectionDTO{
 		ID:               c.ID,
@@ -221,6 +226,7 @@ func (s *Server) toDTO(c store.Connection) connectionDTO {
 		GateMutations:    c.GateMutations,
 		PIIRules:         c.PIIRules,
 		CreatedAt:        c.CreatedAt,
+		ExpiresAt:        expiresAt,
 		ConnectionString: cs,
 	}
 }
@@ -244,6 +250,10 @@ type createRequest struct {
 	MaxRows       *int             `json:"max_rows"`
 	GateMutations *bool            `json:"gate_mutations"`
 	PIIRules      []policy.PIIRule `json:"pii_rules"`
+	// TTL is a duration like "3h", "90m", or "7d". On create, empty/absent
+	// means never expires. On update, absent (nil) leaves the expiry unchanged,
+	// an empty string clears it, and a value resets it to now+TTL.
+	TTL *string `json:"ttl"`
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -264,6 +274,14 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.GateMutations != nil {
 		in.GateMutations = *req.GateMutations
+	}
+	if req.TTL != nil && strings.TrimSpace(*req.TTL) != "" {
+		d, err := parseTTL(*req.TTL)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		in.ExpiresAt = time.Now().UTC().Add(d)
 	}
 
 	conn, _, err := s.store.Create(in)
@@ -305,6 +323,19 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.GateMutations != nil {
 		in.GateMutations = *req.GateMutations
+	}
+	// A present ttl field means "change the expiry": empty clears it, a value
+	// resets it to now+ttl. An absent field leaves the expiry untouched.
+	if req.TTL != nil {
+		in.SetExpiry = true
+		if strings.TrimSpace(*req.TTL) != "" {
+			d, err := parseTTL(*req.TTL)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			in.ExpiresAt = time.Now().UTC().Add(d)
+		}
 	}
 	if err := s.store.Update(id, in); err != nil {
 		s.writeStoreError(w, err)
@@ -476,6 +507,29 @@ func (s *Server) handleDecide(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("approval decided", "id", id, "approved", body.Approved)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// parseTTL parses a human duration for a connection's time-to-live. It accepts
+// Go durations ("3h", "90m", "45s", "2h30m") plus a plain day suffix ("7d").
+func parseTTL(s string) (time.Duration, error) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if n, ok := strings.CutSuffix(s, "d"); ok {
+		days, err := strconv.Atoi(n)
+		if err == nil {
+			if days < 0 {
+				return 0, errors.New("ttl must not be negative")
+			}
+			return time.Duration(days) * 24 * time.Hour, nil
+		}
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid ttl %q (use e.g. 3h, 90m, 7d)", s)
+	}
+	if d <= 0 {
+		return 0, errors.New("ttl must be positive")
+	}
+	return d, nil
 }
 
 // maskURLPassword replaces the password in the upstream URL with "***" for
