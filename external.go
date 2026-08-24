@@ -129,6 +129,7 @@ func extractFlyApp(path string) string {
 func (b *broker) handleFly(w http.ResponseWriter, r *http.Request) {
 	profile, policy, err := b.authProfileFromBearer(r)
 	if err != nil {
+		b.audit(auditEntry{Profile: authFailProfile(profile), Surface: "FLY", Method: r.Method, Path: r.URL.Path, Action: "AUTH", Detail: err.Error()})
 		b.errorResponse(w, http.StatusForbidden, "broker: "+err.Error())
 		return
 	}
@@ -170,6 +171,7 @@ func (b *broker) handleFly(w http.ResponseWriter, r *http.Request) {
 func (b *broker) handleDoppler(w http.ResponseWriter, r *http.Request) {
 	profile, policy, err := b.authProfileFromBearer(r)
 	if err != nil {
+		b.audit(auditEntry{Profile: authFailProfile(profile), Surface: "DOPPLER", Method: r.Method, Path: r.URL.Path, Action: "AUTH", Detail: err.Error()})
 		b.errorResponse(w, http.StatusForbidden, "broker: "+err.Error())
 		return
 	}

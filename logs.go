@@ -161,7 +161,12 @@ func (m logsModel) filtered() []auditEntry {
 		if surface != "" && e.Surface != surface {
 			continue
 		}
-		if action != "" && e.Action != action {
+		// The "DENY" slot means "anything that wasn't allowed" — policy
+		// denials and auth failures alike.
+		if action == "ALLOW" && e.Action != "ALLOW" {
+			continue
+		}
+		if action == "DENY" && e.Action == "ALLOW" {
 			continue
 		}
 		if needle != "" &&
@@ -319,7 +324,7 @@ func (m logsModel) View() string {
 			surfStyle = logsAPIStyle
 		}
 		actStyle := logsAllowStyle
-		if e.Action == "DENY" {
+		if e.Action != "ALLOW" {
 			actStyle = logsDenyStyle
 		}
 		line := fmt.Sprintf("%s %s %s %s %s %s %s",
@@ -345,7 +350,7 @@ func (m logsModel) View() string {
 		filters = append(filters, "surface="+[...]string{"", "GIT", "API"}[m.surfaceIdx])
 	}
 	if m.actionIdx > 0 {
-		filters = append(filters, "action="+[...]string{"", "ALLOW", "DENY"}[m.actionIdx])
+		filters = append(filters, "action="+[...]string{"", "ALLOW", "DENY/AUTH"}[m.actionIdx])
 	}
 	if m.search != "" {
 		filters = append(filters, fmt.Sprintf("search=%q", m.search))

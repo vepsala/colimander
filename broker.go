@@ -170,6 +170,16 @@ func (b *broker) errorResponse(w http.ResponseWriter, status int, msg string) {
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
+// authFailProfile labels the profile column of an auth-failure audit entry:
+// the *claimed* (unverified) username marked with a trailing "?", or a bare
+// "?" when the request carried no username at all.
+func authFailProfile(claimed string) string {
+	if claimed == "" {
+		return "?"
+	}
+	return claimed + "?"
+}
+
 func (b *broker) handleAPI(w http.ResponseWriter, r *http.Request) {
 	upstreamPath := strings.TrimPrefix(r.URL.Path, "/api")
 	if upstreamPath == "" {
@@ -178,6 +188,7 @@ func (b *broker) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 	profile, policy, err := b.authProfile(r)
 	if err != nil {
+		b.audit(auditEntry{Profile: authFailProfile(profile), Surface: "API", Method: r.Method, Path: upstreamPath, Action: "AUTH", Detail: err.Error()})
 		b.errorResponse(w, http.StatusForbidden, "broker: "+err.Error())
 		return
 	}
@@ -239,6 +250,7 @@ func (b *broker) handleGit(w http.ResponseWriter, r *http.Request) {
 
 	profile, policy, err := b.authProfile(r)
 	if err != nil {
+		b.audit(auditEntry{Profile: authFailProfile(profile), Surface: "GIT", Method: r.Method, Path: upstreamPath, Action: "AUTH", Detail: err.Error()})
 		b.errorResponse(w, http.StatusForbidden, "broker: "+err.Error())
 		return
 	}
