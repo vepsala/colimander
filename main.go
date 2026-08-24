@@ -1750,6 +1750,7 @@ Commands:
   ports <name>                        list TCP listeners inside the VM with host-side URLs
   hosts-sync                          rewrite the colimander block in /etc/hosts (recovery)
   broker {run|start|stop|status|tail} run the credential broker (proxy for github.com / api.github.com)
+  logs [--limit N]                    live TUI over the broker audit log (filter by profile/surface/action)
   policy {default|show <name>}        emit default policy JSON, or show a profile's current policy
   packages <name>                     install optional packages (claude-code, opencode, postgres, …) into a profile
   tokens {set|list|clear} ...         manage upstream tokens for fly.io / doppler brokers (~/.colimander/tokens.json)
@@ -1791,6 +1792,8 @@ func main() {
 		err = cmdHostsSync(os.Args[2:])
 	case "broker":
 		err = cmdBroker(os.Args[2:])
+	case "logs":
+		err = cmdLogs(os.Args[2:])
 	case "policy":
 		err = cmdPolicy(os.Args[2:])
 	case "packages":
