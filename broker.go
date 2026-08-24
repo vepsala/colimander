@@ -223,9 +223,14 @@ func (b *broker) handleGit(w http.ResponseWriter, r *http.Request) {
 	// Path shape: /git/<owner>/<repo>.git/<endpoint>...
 	rest := strings.TrimPrefix(r.URL.Path, "/git/")
 	parts := strings.SplitN(rest, "/", 3)
-	if len(parts) < 3 || !strings.HasSuffix(parts[1], ".git") {
-		b.errorResponse(w, http.StatusBadRequest, fmt.Sprintf("git path must look like /git/<owner>/<repo>.git/<endpoint>, got %q", r.URL.Path))
+	if len(parts) < 3 {
+		b.errorResponse(w, http.StatusBadRequest, fmt.Sprintf("git path must look like /git/<owner>/<repo>[.git]/<endpoint>, got %q", r.URL.Path))
 		return
+	}
+	// GitHub accepts clone URLs with or without the .git suffix, and some
+	// tools (pi, go get) build them without it — normalize to the .git form.
+	if !strings.HasSuffix(parts[1], ".git") {
+		parts[1] += ".git"
 	}
 	owner := parts[0]
 	repo := parts[1]
@@ -250,6 +255,11 @@ func (b *broker) handleGit(w http.ResponseWriter, r *http.Request) {
 	// large pushes this is memory-heavy but predictable.
 	var bodyBuf []byte
 	if r.Method == http.MethodPost && endpoint == "git-receive-pack" {
+		if ok, reason := policy.checkGitPush("/" + owner + "/" + repo); !ok {
+			b.audit(auditEntry{Profile: profile, Surface: "GIT", Method: r.Method, Path: upstreamPath, Action: "DENY", Detail: reason})
+			b.denyResponse(w, reason)
+			return
+		}
 		bodyBuf, err = io.ReadAll(r.Body)
 		if err != nil {
 			b.errorResponse(w, http.StatusBadRequest, "read push body: "+err.Error())

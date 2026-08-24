@@ -102,6 +102,9 @@ type DopplerPolicy struct {
 //   - "api": matches Method + PathGlob against requests proxied to api.github.com.
 //   - "git-delete-ref": matches RefGlob against ref-deletes inside git push
 //     bodies (pkt-line with new-sha all zeros).
+//   - "git-push": matches PathGlob against /<owner>/<repo>.git on
+//     git-receive-pack requests — denies any push to matching repos while
+//     leaving fetch/clone untouched (pull-only owners).
 type DenyRule struct {
 	ID       string `json:"id"`
 	Kind     string `json:"kind"`
@@ -255,6 +258,20 @@ func (p *Policy) checkGitDelete(ref string) (bool, string) {
 		}
 		if r.RefGlob == "" || matchGlob(r.RefGlob, ref) {
 			return false, fmt.Sprintf("%s: cannot delete %s", r.ID, ref)
+		}
+	}
+	return true, ""
+}
+
+// checkGitPush returns (allowed, reason) for a git-receive-pack request to
+// /<owner>/<repo>.git — "git-push" rules match PathGlob against that path.
+func (p *Policy) checkGitPush(path string) (bool, string) {
+	for _, r := range p.DenyRules {
+		if r.Kind != "git-push" {
+			continue
+		}
+		if r.PathGlob == "" || matchGlob(r.PathGlob, path) {
+			return false, fmt.Sprintf("%s: %s", r.ID, r.Reason)
 		}
 	}
 	return true, ""

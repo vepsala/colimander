@@ -149,3 +149,22 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+func TestCheckGitPush(t *testing.T) {
+	p := &Policy{DenyRules: []DenyRule{
+		{ID: "no-push-kotisivukamu", Kind: "git-push", PathGlob: "/kotisivukamu/*",
+			Reason: "kotisivukamu repos are pull-only from this profile."},
+	}}
+	ok, reason := p.checkGitPush("/kotisivukamu/kamu-pi-extension.git")
+	if ok {
+		t.Errorf("expected push to kotisivukamu repo to be denied")
+	}
+	if !contains(reason, "no-push-kotisivukamu") {
+		t.Errorf("expected reason to name the rule, got %q", reason)
+	}
+	// Pushes to other owners are untouched by the rule.
+	ok, _ = p.checkGitPush("/bossgloss/bg-backend.git")
+	if !ok {
+		t.Errorf("expected push to bossgloss repo to be allowed; got DENY")
+	}
+}
