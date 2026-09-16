@@ -36,6 +36,10 @@ install step.
 - `packages.go` — optional package catalog (Claude Code, OpenCode, Postgres-16,
   Node-via-mise) plus the always-on `tmux` baseline.
 - `docs/external-brokers.md` — user-facing doc for the fly + doppler surface.
+- `docs/index.html` — standalone GitHub Pages landing page (no build step, no
+  framework). Served from the `docs/` folder on `main`; `docs/.nojekyll` keeps
+  Pages from running Jekyll over it. Keep its Status section in sync with the
+  README when commands land.
 - `*_test.go` — unit tests for policy matchers, allow-rules, and pkt-line
   parser. No network / VM tests; the broker is smoke-tested by hand.
 

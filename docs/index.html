@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Colimander</title>
+<meta name="description" content="Local agent orchestrator for macOS, built on Colima/Lima, with a credential-firewalling proxy so a compromised agent can't exfiltrate anything that works off your machine.">
+<meta property="og:title" content="Colimander">
+<meta property="og:description" content="Per-project Colima VMs with a host-side credential broker. The VM only ever sees inert local handles.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>">
+<style>
+:root {
+  --bg: #0e1116;
+  --bg-soft: #161b22;
+  --bg-code: #0a0d12;
+  --fg: #e6edf3;
+  --fg-dim: #9aa7b4;
+  --fg-faint: #6b7784;
+  --accent: #4dd4ac;
+  --accent-dim: #2f8d73;
+  --warn: #e3b341;
+  --line: #262d36;
+  --radius: 10px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #ffffff;
+    --bg-soft: #f6f8fa;
+    --bg-code: #f0f3f6;
+    --fg: #1c2128;
+    --fg-dim: #57606a;
+    --fg-faint: #8b949e;
+    --accent: #1a7f64;
+    --accent-dim: #3aa88a;
+    --warn: #9a6700;
+    --line: #d8dee4;
+  }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 860px; margin: 0 auto; padding: 0 24px; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code {
+  font-family: var(--mono);
+  font-size: 0.87em;
+  background: var(--bg-code);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0.1em 0.38em;
+}
+pre {
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1.6;
+  background: var(--bg-code);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  overflow-x: auto;
+}
+pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+h1, h2, h3 { line-height: 1.25; font-weight: 650; letter-spacing: -0.015em; }
+h2 { font-size: 1.55rem; margin: 3.5rem 0 1rem; }
+h3 { font-size: 1.12rem; margin: 2rem 0 0.5rem; }
+p { margin: 1rem 0; }
+hr { border: 0; border-top: 1px solid var(--line); margin: 0; }
+
+/* header */
+header { border-bottom: 1px solid var(--line); background: var(--bg-soft); }
+.hero { padding: 72px 0 60px; }
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 14px;
+}
+.hero h1 { font-size: clamp(2.4rem, 7vw, 3.4rem); margin: 0 0 18px; }
+.tagline { font-size: clamp(1.05rem, 2.6vw, 1.3rem); color: var(--fg-dim); margin: 0 0 28px; max-width: 42ch; }
+.cta { display: flex; flex-wrap: wrap; gap: 12px; }
+.btn {
+  display: inline-block;
+  padding: 10px 18px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  font-size: 15px;
+  font-weight: 550;
+  color: var(--fg);
+}
+.btn:hover { text-decoration: none; border-color: var(--accent); }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #06231c; }
+@media (prefers-color-scheme: light) { .btn-primary { color: #fff; } }
+.btn-primary:hover { background: var(--accent-dim); border-color: var(--accent-dim); }
+
+/* notice */
+.notice {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  font-size: 15px;
+  color: var(--fg-dim);
+  margin: 40px 0 0;
+}
+.notice strong { color: var(--fg); }
+
+/* grid */
+.grid { display: grid; gap: 18px; grid-template-columns: repeat(2, 1fr); margin-top: 1.5rem; }
+@media (max-width: 680px) { .grid { grid-template-columns: 1fr; } }
+.card {
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px 22px;
+}
+.card h3 { margin: 0 0 6px; font-size: 1rem; }
+.card p { margin: 0; font-size: 15px; color: var(--fg-dim); }
+
+/* diagram */
+figure { margin: 2rem 0 0; }
+figure svg { width: 100%; height: auto; display: block; }
+figcaption { font-size: 14px; color: var(--fg-faint); margin-top: 10px; text-align: center; }
+
+/* status lists */
+.status { display: grid; gap: 28px; grid-template-columns: 1fr 1fr; margin-top: 1.5rem; }
+@media (max-width: 680px) { .status { grid-template-columns: 1fr; } }
+.status h3 { margin-top: 0; }
+.status ul { list-style: none; padding: 0; margin: 0; font-size: 15px; }
+.status li { padding: 5px 0 5px 26px; position: relative; color: var(--fg-dim); border-bottom: 1px solid var(--line); }
+.status li:last-child { border-bottom: 0; }
+.status li::before { position: absolute; left: 0; font-family: var(--mono); }
+.done li::before { content: "✓"; color: var(--accent); }
+.todo li::before { content: "·"; color: var(--fg-faint); font-size: 1.4em; line-height: 1; }
+.status code { font-size: 0.85em; }
+
+/* misc */
+ul.plain { padding-left: 22px; color: var(--fg-dim); }
+ul.plain li { margin: 6px 0; }
+ul.plain strong, .status strong { color: var(--fg); }
+footer {
+  border-top: 1px solid var(--line);
+  margin-top: 72px;
+  padding: 32px 0 56px;
+  font-size: 14px;
+  color: var(--fg-faint);
+}
+footer a { color: var(--fg-dim); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap hero">
+    <p class="eyebrow">macOS · Colima · Go</p>
+    <h1>Colimander</h1>
+    <p class="tagline">Per-project dev VMs with a credential firewall, so you can let an agent off the leash without handing it your real tokens.</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/vepsala/colimander">View on GitHub</a>
+      <a class="btn" href="#how">How it works</a>
+      <a class="btn" href="#status">Status</a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <div class="notice">
+    <span aria-hidden="true">⚠︎</span>
+    <p style="margin:0"><strong>This is a personal tool, published as food for thought.</strong> I built it for my own machine and I don't suggest anyone run it blindly. Fork it, read it, steal the ideas.</p>
+  </div>
+
+  <h2>The problem</h2>
+  <p>I work on 3–5 projects in parallel on an M3 with 36 GB of RAM. That isn't enough to keep five fully-provisioned dev environments hot — language servers, Postgres, browsers, agent VMs all stacked. So in practice: 1–2 "safe" environments, and unsafe shortcuts on the rest.</p>
+  <p>Agents like Claude Code thrive when they can see the whole environment — real language servers, real databases, real tools. The cloud-sandbox version is always a step behind. The cost is that <em>local-first agentic development</em> has become synonymous with <em>the agent has your real GitHub token, your real DB password, your real filesystem</em>.</p>
+  <p>Two halves of the chore:</p>
+  <ul class="plain">
+    <li><strong>Lifecycle ergonomics</strong> — spin up, swap between, and tear down environments without losing track of what's where.</li>
+    <li><strong>Safety without overhead</strong> — run <code>claude --dangerously-skip-permissions</code> anywhere without holding your breath.</li>
+  </ul>
+
+  <h2 id="how">How it works</h2>
+  <p>Each project is a Colima profile — its own VM, disk, and Docker context, with <strong>no host bind-mount</strong>. Real secrets stay in macOS Keychain on the host. The VM gets local-only handles, and a host daemon brokers every sensitive connection, swapping in the real credential only for operations its policy allows.</p>
+
+  <figure>
+    <svg viewBox="0 0 800 300" role="img" aria-label="Diagram: a VM holding only inert handles talks to a host-side broker, which holds the real credentials and applies policy before forwarding to GitHub, fly.io, and Doppler.">
+      <defs>
+        <marker id="arw" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+          <path d="M0,0 L9,4.5 L0,9 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">
+
+        <!-- VM -->
+        <rect x="8" y="40" width="228" height="200" rx="10" fill="none" stroke="currentColor" stroke-opacity=".28"/>
+        <text x="24" y="66" fill="currentColor" font-size="12" opacity=".55">COLIMA VM · myproj</text>
+        <rect x="24" y="82" width="196" height="54" rx="7" fill="currentColor" fill-opacity=".05" stroke="currentColor" stroke-opacity=".2"/>
+        <text x="38" y="103" fill="currentColor" opacity=".85">agent + your code</text>
+        <text x="38" y="122" fill="currentColor" font-size="11" opacity=".5">--dangerously-skip-permissions</text>
+        <rect x="24" y="150" width="196" height="66" rx="7" fill="currentColor" fill-opacity=".05" stroke="currentColor" stroke-opacity=".2"/>
+        <text x="38" y="172" fill="currentColor" font-size="11" opacity=".5">env:</text>
+        <text x="38" y="191" fill="currentColor" font-size="11.5" opacity=".8">GITHUB_TOKEN=cmd-handle-7af2</text>
+        <text x="38" y="208" fill="currentColor" font-size="11.5" opacity=".8">PROD_DB_URL=…lima.internal</text>
+
+        <!-- arrow 1 -->
+        <line x1="240" y1="140" x2="298" y2="140" stroke="currentColor" stroke-opacity=".45" marker-end="url(#arw)" color="currentColor"/>
+        <text x="246" y="131" fill="currentColor" font-size="10.5" opacity=".5">handle</text>
+
+        <!-- broker -->
+        <rect x="306" y="40" width="188" height="200" rx="10" fill="none" stroke="currentColor" stroke-opacity=".28"/>
+        <text x="322" y="66" fill="currentColor" font-size="12" opacity=".55">HOST · colimanderd</text>
+        <rect x="322" y="82" width="156" height="42" rx="7" fill="currentColor" fill-opacity=".05" stroke="currentColor" stroke-opacity=".2"/>
+        <text x="336" y="108" fill="currentColor" opacity=".85">policy check</text>
+        <rect x="322" y="136" width="156" height="42" rx="7" fill="currentColor" fill-opacity=".05" stroke="currentColor" stroke-opacity=".2"/>
+        <text x="336" y="162" fill="currentColor" opacity=".85">real credential</text>
+        <rect x="322" y="190" width="156" height="34" rx="7" fill="currentColor" fill-opacity=".05" stroke="currentColor" stroke-opacity=".2"/>
+        <text x="336" y="212" fill="currentColor" opacity=".85">audit log</text>
+
+        <!-- arrow 2 -->
+        <line x1="498" y1="140" x2="556" y2="140" stroke="currentColor" stroke-opacity=".45" marker-end="url(#arw)"/>
+        <text x="502" y="131" fill="currentColor" font-size="10.5" opacity=".5">real auth</text>
+
+        <!-- upstreams -->
+        <rect x="564" y="40" width="228" height="200" rx="10" fill="none" stroke="currentColor" stroke-opacity=".28"/>
+        <text x="580" y="66" fill="currentColor" font-size="12" opacity=".55">UPSTREAM</text>
+        <rect x="580" y="82" width="196" height="38" rx="7" fill="currentColor" fill-opacity=".05" stroke="currentColor" stroke-opacity=".2"/>
+        <text x="594" y="106" fill="currentColor" opacity=".85">github.com / api</text>
+        <rect x="580" y="130" width="196" height="38" rx="7" fill="currentColor" fill-opacity=".05" stroke="currentColor" stroke-opacity=".2"/>
+        <text x="594" y="154" fill="currentColor" opacity=".85">api.fly.io</text>
+        <rect x="580" y="178" width="196" height="38" rx="7" fill="currentColor" fill-opacity=".05" stroke="currentColor" stroke-opacity=".2"/>
+        <text x="594" y="202" fill="currentColor" opacity=".85">api.doppler.com</text>
+
+        <text x="400" y="278" fill="currentColor" font-size="11.5" opacity=".5" text-anchor="middle">a leaked handle is inert off this machine</text>
+      </g>
+    </svg>
+    <figcaption>The VM never holds a credential that works anywhere else.</figcaption>
+  </figure>
+
+  <div class="grid">
+    <div class="card">
+      <h3>One VM per project</h3>
+      <p>Each profile is a Colima VM with its own disk and Docker context, templated from a <code>colima.yaml</code> Colimander owns. Create, start, stop, destroy are thin wrappers.</p>
+    </div>
+    <div class="card">
+      <h3>No host bind-mount</h3>
+      <p>Project files live only inside the VM. You edit over SSH from Zed / VS Code / Cursor / JetBrains. If the VM gets popped and drops a binary, the host never sees it.</p>
+    </div>
+    <div class="card">
+      <h3>No port collisions</h3>
+      <p>Every profile gets a routable IP and a <code>.local</code> hostname in <code>/etc/hosts</code>, so <code>myproj.local:3000</code> and <code>other.local:3000</code> both work at once.</p>
+    </div>
+    <div class="card">
+      <h3>Policy the platform can't express</h3>
+      <p>Allow writes to two repos, allow repo creation, deny <code>DELETE /repos/*</code>, deny renames. Finer than a fine-grained PAT, without installing an App per org.</p>
+    </div>
+    <div class="card">
+      <h3>Aggressive defaults</h3>
+      <p>Deletion, webhook tampering, SSH/GPG key changes, secret deletion, org settings, role escalation — denied. Reads and benign writes pass.</p>
+    </div>
+    <div class="card">
+      <h3>Every redemption logged</h3>
+      <p><code>colimander logs</code> is a live TUI over the broker audit log, filterable by profile, surface, and action — including auth failures.</p>
+    </div>
+  </div>
+
+  <h2>Why a broker beats a firewall</h2>
+  <p>Most agent-sandbox setups need egress allow-lists, DNS filtering, iptables rules — all trying to stop credential exfiltration at the network layer. If the credential the agent holds <em>doesn't work off your machine in the first place</em>, you don't need that ceremony. The VM can have wide network access; the interesting things are gated at the broker.</p>
+  <p>That's what makes <code>--dangerously-skip-permissions</code> defensible: not because the agent is well-behaved, but because the worst it can do is bounded by policy — and rotating a secret changes nothing inside the VM.</p>
+
+  <h2 id="status">Status</h2>
+  <p>v0, and honest about it: the lifecycle CLI and the credential broker work and are validated by hand on macOS with real VM boots. Several conveniences from the design doc are still unwritten.</p>
+  <div class="status">
+    <div>
+      <h3>Working</h3>
+      <ul class="done">
+        <li><code>setup</code> wizard, <code>create</code>, <code>start</code>, <code>stop</code>, <code>destroy</code></li>
+        <li><code>ssh</code>, <code>status</code>, <code>ls</code>, <code>ports</code>, <code>hosts-sync</code></li>
+        <li><code>broker</code> — git + GitHub API proxy with allow/deny policy</li>
+        <li><code>policy</code>, <code>tokens</code> — fly.io and Doppler surfaces</li>
+        <li><code>logs</code> — live TUI over the audit log</li>
+        <li><code>packages</code> — Claude Code, OpenCode, Postgres, Node via mise</li>
+        <li>Guardrail: mutating commands refuse unmanaged profiles</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Not built yet</h3>
+      <ul class="todo">
+        <li>Keychain-backed <code>secret</code> slots with TTLs</li>
+        <li><code>scale</code> resize helper and <code>health</code> indicator</li>
+        <li>Force-push detection on <code>git push</code></li>
+        <li>mTLS profile identity (today: Basic auth with a handle)</li>
+        <li>SOCKS5 proxy for inspecting outbound traffic</li>
+        <li>A sibling project for remote VPS environments</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Try it</h2>
+  <pre><code>git clone https://github.com/vepsala/colimander
+cd colimander
+go build -o colimander .
+
+./colimander setup          # wizard: deps, name, specs, optional import
+./colimander broker start   # host-side credential proxy
+./colimander ls</code></pre>
+  <p>Requires macOS with <a href="https://colima.run">Colima</a> and Go. <a href="https://github.com/vepsala/colimander/blob/main/README.md">The README</a> carries the full design rationale, and <a href="https://github.com/vepsala/colimander/blob/main/docs/external-brokers.md">docs/external-brokers.md</a> covers the fly.io and Doppler surfaces.</p>
+
+  <h2>Threat model</h2>
+  <div class="status">
+    <div>
+      <h3>Defends against</h3>
+      <ul class="done">
+        <li>Agent writing to the host filesystem — no bind-mount</li>
+        <li>Credential exfiltration — only inert handles are in the VM</li>
+        <li>Cross-project credential reuse — identity is per profile</li>
+        <li>"I forgot prod is still loaded" — TTLs on borrowed secrets</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Does not defend against</h3>
+      <ul class="todo">
+        <li>A kernel exploit that escapes the VM</li>
+        <li>You typing the real secret into the VM yourself</li>
+        <li>macOS itself being compromised — Keychain is the trust root</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Prior art</h2>
+  <ul class="plain">
+    <li><a href="https://github.com/trailofbits/claude-code-devcontainer">Trail of Bits — claude-code-devcontainer</a>: closest existing thing; solid filesystem boundary, no credential broker.</li>
+    <li><a href="https://platform.claude.com/docs/en/agent-sdk/secure-deployment">Anthropic — Securely deploying AI agents</a>: gestures at the proxy pattern.</li>
+    <li><a href="https://patrickmccanna.net/a-better-way-to-limit-claude-code-and-other-coding-agents-access-to-secrets/">Patrick McCanna — Limiting coding-agent access to secrets</a>: likewise.</li>
+    <li><a href="https://lima-vm.io">Lima</a> and <a href="https://colima.run">Colima</a>: the foundation this sits on.</li>
+  </ul>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <a href="https://github.com/vepsala/colimander">github.com/vepsala/colimander</a> · <a href="https://github.com/vepsala/colimander/blob/main/LICENSE">MIT</a>
+  </div>
+</footer>
+
+</body>
+</html>

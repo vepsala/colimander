@@ -2,6 +2,8 @@
 
 Local agent orchestrator for macOS, built on top of [Colima](https://colima.run) / [Lima](https://lima-vm.io), with a credential-firewalling proxy so a compromised agent inside a sandboxed environment can't exfiltrate anything that works off your machine.
 
+Overview site: <https://vepsala.github.io/colimander/>
+
 ## Why this exists
 This is a local tool I created for myself, because orchestrating multiple dev environments is annoying locally. I have experimented also with fly's sprites and hetzner, but so far I have not had the time to do that properly. This same approach would work great on any other machines too, but this version is for macos.
 
