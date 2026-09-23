@@ -69,3 +69,18 @@ func TestRequiresDopplerProject(t *testing.T) {
 		}
 	}
 }
+
+func TestFlyPolicyAllowsApp(t *testing.T) {
+	listed := &FlyPolicy{AllowedApps: []string{"kotisivukamu"}}
+	if !listed.allowsApp("Kotisivukamu") || listed.allowsApp("other") {
+		t.Error("listed apps: want only kotisivukamu allowed (case-insensitive)")
+	}
+	wild := &FlyPolicy{AllowedApps: []string{"*"}}
+	if !wild.allowsApp("anything") {
+		t.Error(`"*" should allow any app`)
+	}
+	empty := &FlyPolicy{}
+	if empty.allowsApp("anything") {
+		t.Error("empty allowed_apps must deny, not allow all")
+	}
+}

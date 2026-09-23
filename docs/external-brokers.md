@@ -57,7 +57,7 @@ Doppler CLIs send.
 ```
 ? Enable fly.io API brokering?
 ? Fly upstream token            (masked input — paste a scoped token)
-? Allowed fly app names         (comma-separated)
+? Allowed fly app names         (comma-separated; blank = all apps)
 ? Enable Doppler secrets brokering?
 ? Doppler upstream token        (masked input)
 ? Allowed Doppler project names (comma-separated)
@@ -103,6 +103,12 @@ edit them in `policy.json` after the fact.
   ]
 }
 ```
+
+To let the agent read every app the upstream token can see, use
+`"allowed_apps": ["*"]` (what the wizard writes when you leave the app list
+blank). The endpoint allowlist still applies, so that's "read-only + logs for
+all apps", not "anything on all apps". An empty `allowed_apps` list denies
+every app.
 
 What this allows: `fly status -a kotisivukamu`, `fly logs -a kotisivukamu`,
 `fly machine status <id>`, `fly releases`.
@@ -182,7 +188,7 @@ Same surface format as the GitHub broker entries.
 |------------------------------------------------------------------|-------------------------------------------|
 | `fly apps create` (overprovisioning)                             | `allowed_endpoints` (no POST `/v1/apps`)  |
 | `fly apps destroy <name>` (deleting yours)                       | `allowed_endpoints` (no DELETE `/v1/apps/*`) |
-| `fly logs -a <not-your-app>`                                     | `allowed_apps`                            |
+| `fly logs -a <not-your-app>`                                     | `allowed_apps` (unless it's `["*"]`)      |
 | `doppler secrets get` on a real secret value                     | `allowed_endpoints` (no GET on secrets)   |
 | `doppler secrets set` on a project you didn't list               | `allowed_projects`                        |
 | Stealing the broker handle and impersonating from outside        | Broker listens on loopback only (lima fwd)|

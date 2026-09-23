@@ -911,7 +911,7 @@ func cmdSetup(args []string) error {
 		huh.NewGroup(
 			huh.NewConfirm().
 				Title("Enable fly.io API brokering?").
-				Description("Lets the agent call a small allowlist of fly endpoints (app status, log streaming) via the broker. Default: read-only + logs for the apps you list.").
+				Description("Lets the agent call a small allowlist of fly endpoints (app status, log streaming) via the broker. Default: read-only + logs, for all apps or just the ones you list.").
 				Affirmative("Yes, configure fly.io").
 				Negative("Skip").
 				Value(&enableFly),
@@ -925,9 +925,8 @@ func cmdSetup(args []string) error {
 				Validate(validateNonEmpty),
 			huh.NewInput().
 				Title("Allowed fly app names").
-				Description("Comma-separated. The broker refuses requests to apps not on this list.").
-				Value(&flyAppsCSV).
-				Validate(validateNonEmpty),
+				Description("Comma-separated. Leave blank to allow all apps the token can see (endpoints stay read-only + logs).").
+				Value(&flyAppsCSV),
 		).WithHideFunc(func() bool { return !enableFly }),
 		// ---- optional: doppler brokering ----
 		huh.NewGroup(
@@ -987,8 +986,12 @@ func cmdSetup(args []string) error {
 		DenyRules:     filterRulesByID(allRules, pickedDenyIDs),
 	}
 	if enableFly {
+		flyApps := splitCSV(flyAppsCSV)
+		if len(flyApps) == 0 {
+			flyApps = []string{"*"}
+		}
 		policy.FlyPolicy = &FlyPolicy{
-			AllowedApps:      splitCSV(flyAppsCSV),
+			AllowedApps:      flyApps,
 			AllowedEndpoints: defaultFlyEndpoints(),
 		}
 	}
@@ -1019,8 +1022,12 @@ func cmdSetup(args []string) error {
 	fmt.Printf("  Allowed owners: %s\n", strings.Join(policy.AllowedOwners, ", "))
 	fmt.Printf("  Deny rules:     %d / %d enforced\n", len(policy.DenyRules), len(allRules))
 	if policy.FlyPolicy != nil {
+		flyApps := strings.Join(policy.FlyPolicy.AllowedApps, ", ")
+		if containsFold(policy.FlyPolicy.AllowedApps, "*") {
+			flyApps = "all apps"
+		}
 		fmt.Printf("  Fly apps:       %s (%d allowed endpoint(s))\n",
-			strings.Join(policy.FlyPolicy.AllowedApps, ", "), len(policy.FlyPolicy.AllowedEndpoints))
+			flyApps, len(policy.FlyPolicy.AllowedEndpoints))
 	}
 	if policy.DopplerPolicy != nil {
 		fmt.Printf("  Doppler projects: %s (%d allowed endpoint(s))\n",

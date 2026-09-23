@@ -149,7 +149,7 @@ func (b *broker) handleFly(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if app := extractFlyApp(upstreamPath); app != "" {
-		if !containsFold(policy.FlyPolicy.AllowedApps, app) {
+		if !policy.FlyPolicy.allowsApp(app) {
 			b.audit(auditEntry{Profile: profile, Surface: "FLY", Method: r.Method, Path: upstreamPath, Action: "DENY", Detail: fmt.Sprintf("app %q not in allowed_apps", app)})
 			b.denyResponse(w, fmt.Sprintf("fly app %q not in allowed_apps %v", app, policy.FlyPolicy.AllowedApps))
 			return

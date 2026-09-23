@@ -72,7 +72,10 @@ type EndpointRule struct {
 //
 // AllowedApps is a soft scope check: when a path includes an app name
 // (/v1/apps/<app>/...), the broker verifies that <app> is in this list.
-// Paths without an app segment skip the check.
+// Paths without an app segment skip the check. A "*" entry allows every app
+// the upstream token can see — reasonable for a read-only endpoint set,
+// since AllowedEndpoints still bounds what can be done to them. An empty
+// list allows no apps (not "all"), so a blank policy never widens silently.
 //
 // AllowedEndpoints is the per-(method, path) allowlist. Endpoints not on the
 // list are denied — there is no equivalent of DenyRules here, by design: the
@@ -80,6 +83,11 @@ type EndpointRule struct {
 type FlyPolicy struct {
 	AllowedApps      []string       `json:"allowed_apps"`
 	AllowedEndpoints []EndpointRule `json:"allowed_endpoints"`
+}
+
+// allowsApp reports whether app is covered by AllowedApps.
+func (p *FlyPolicy) allowsApp(app string) bool {
+	return containsFold(p.AllowedApps, "*") || containsFold(p.AllowedApps, app)
 }
 
 // DopplerPolicy gates doppler secrets access.
