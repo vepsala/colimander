@@ -11,23 +11,17 @@
   header { padding:18px 24px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:12px; }
   header h1 { font-size:17px; margin:0; font-weight:650; }
   header span { color:var(--muted); font-size:12px; }
-  main { max-width:none; margin:0; padding:24px 40px; }
+  main { max-width:2260px; margin:0 auto; padding:24px; }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px; margin-bottom:22px; }
   h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 14px; }
-  table { width:100%; border-collapse:collapse; table-layout:fixed; }
-  col.c-name { width:12%; }
-  col.c-user { width:14%; }
-  col.c-upstream { width:32%; }
-  col.c-limits { width:16%; }
-  col.c-pii { width:16%; }
-  col.c-actions { width:10%; }
+  table { width:100%; border-collapse:collapse; }
   th,td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
   th { color:var(--muted); font-weight:500; font-size:12px; }
   code { background:#0c0f13; border:1px solid var(--line); border-radius:5px; padding:1px 6px; font:12px ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; }
   label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
   input[type=text], select { width:100%; background:#0c0f13; border:1px solid var(--line); border-radius:6px; color:var(--fg); padding:8px 10px; font:13px inherit; }
   .row { display:flex; gap:12px; flex-wrap:wrap; }
-  .row > div { flex:1; min-width:260px; }
+  .row > div { flex:1; min-width:180px; }
   .check { display:flex; align-items:center; gap:8px; margin-top:24px; }
   .check input { width:auto; }
   button { background:var(--accent); color:#06101f; border:0; border-radius:6px; padding:8px 14px; font:600 13px inherit; cursor:pointer; }
@@ -44,7 +38,7 @@
   /* agent connection string row under each connection */
   .mainrow td { border-bottom:0; padding-bottom:4px; }
   .csrow td { padding-top:0; }
-  .upstream { display:inline-block; max-width:none; word-break:break-all; }
+  .upstream { display:inline-block; max-width:1140px; word-break:break-all; }
   .cs { display:flex; gap:10px; align-items:center; }
   .cs .clabel { color:var(--muted); font-size:11px; white-space:nowrap; }
   .copyable { flex:1; cursor:pointer; word-break:break-all; }
@@ -99,9 +93,6 @@
   <div class="panel">
     <h2>Connections</h2>
     <table>
-      <colgroup>
-        <col class="c-name"><col class="c-user"><col class="c-upstream"><col class="c-limits"><col class="c-pii"><col class="c-actions">
-      </colgroup>
       <thead><tr><th>Name</th><th>Agent user</th><th>Upstream</th><th>Limits</th><th>PII</th><th></th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
