@@ -11,7 +11,7 @@
   header { padding:18px 24px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:12px; }
   header h1 { font-size:17px; margin:0; font-weight:650; }
   header span { color:var(--muted); font-size:12px; }
-  main { max-width:1500px; margin:0 auto; padding:24px; }
+  main { max-width:1900px; margin:0 auto; padding:24px; }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px; margin-bottom:22px; }
   h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 14px; }
   table { width:100%; border-collapse:collapse; }
@@ -38,7 +38,7 @@
   /* agent connection string row under each connection */
   .mainrow td { border-bottom:0; padding-bottom:4px; }
   .csrow td { padding-top:0; }
-  .upstream { display:inline-block; max-width:380px; word-break:break-all; }
+  .upstream { display:inline-block; max-width:640px; word-break:break-all; }
   .cs { display:flex; gap:10px; align-items:center; }
   .cs .clabel { color:var(--muted); font-size:11px; white-space:nowrap; }
   .copyable { flex:1; cursor:pointer; word-break:break-all; }
@@ -324,9 +324,12 @@ async function saveEdit() {
   load();
 }
 
-async function del(id, name) {
+async function del(id) {
+  const c = connsCache.find(x => x.id === id);
+  const name = c ? c.name : "this connection";
   if (!confirm(`Delete connection "${name}"?`)) return;
-  await req(`/api/connections/${id}`, {method:"DELETE"});
+  const res = await req(`/api/connections/${id}`, {method:"DELETE"});
+  if (!res.ok) { const d = await res.json().catch(()=>({})); alert(d.error || "delete failed"); return; }
   load();
 }
 
@@ -353,7 +356,7 @@ async function load() {
       <td class="actions">
         <button class="secondary" onclick="edit(${c.id})">Edit</button>
         <button class="secondary" onclick="rotate(${c.id})">Rotate</button>
-        <button class="danger" onclick="del(${c.id}, ${JSON.stringify(c.name)})">Delete</button>
+        <button class="danger" onclick="del(${c.id})">Delete</button>
       </td>
     </tr>
     <tr class="csrow"><td colspan="6">${csCell}</td></tr>`;
