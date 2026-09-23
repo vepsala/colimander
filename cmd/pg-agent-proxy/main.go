@@ -126,14 +126,11 @@ func runServe(args []string) {
 		startAdmin = false
 	}
 
-	// Sweep expired connections periodically (and once at startup). Expired
-	// credentials already fail auth via GetByUsername; this reclaims the rows.
-	if n, err := st.DeleteExpired(time.Now().UTC()); err != nil {
-		log.Warn("initial expiry sweep failed", "err", err)
-	} else if n > 0 {
-		log.Info("swept expired connections", "count", n)
-	}
-	go sweepExpired(ctx, st, log)
+	// Sweep expired connections and rotate due passwords periodically (and once
+	// at startup). Expired credentials already fail auth via GetByUsername;
+	// this reclaims the rows and performs scheduled rotations.
+	sweep(st, log)
+	go sweepLoop(ctx, st, log)
 
 	var wg sync.WaitGroup
 	if startAdmin {
@@ -159,8 +156,8 @@ func runServe(args []string) {
 	wg.Wait()
 }
 
-// sweepExpired deletes expired connections once a minute until ctx is done.
-func sweepExpired(ctx context.Context, st *store.Store, log *slog.Logger) {
+// sweepLoop runs sweep once a minute until ctx is done.
+func sweepLoop(ctx context.Context, st *store.Store, log *slog.Logger) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
@@ -168,12 +165,29 @@ func sweepExpired(ctx context.Context, st *store.Store, log *slog.Logger) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if n, err := st.DeleteExpired(time.Now().UTC()); err != nil {
-				log.Warn("expiry sweep failed", "err", err)
-			} else if n > 0 {
-				log.Info("swept expired connections", "count", n)
-			}
+			sweep(st, log)
 		}
+	}
+}
+
+// sweep deletes expired connections, then rotates the password of every
+// connection whose automatic rotation is due. In-flight proxied sessions are
+// untouched; the old password simply stops authenticating new ones.
+func sweep(st *store.Store, log *slog.Logger) {
+	now := time.Now().UTC()
+	if n, err := st.DeleteExpired(now); err != nil {
+		log.Warn("expiry sweep failed", "err", err)
+	} else if n > 0 {
+		log.Info("swept expired connections", "count", n)
+	}
+	rotated, err := st.RotateDue(now)
+	for _, r := range rotated {
+		log.Info("connection password rotated automatically",
+			"id", r.ID, "name", r.Name, "username", r.AgentUsername,
+			"next_rotation", r.NextRotationAt.Format(time.RFC3339))
+	}
+	if err != nil {
+		log.Warn("automatic rotation failed", "err", err)
 	}
 }
 

@@ -76,6 +76,7 @@
     <div class="row">
       <div><label>Max rows before approval</label><input id="f-maxrows" type="text" value="1000"></div>
       <div><label>Expires in (optional)</label><input id="f-ttl" type="text" placeholder="e.g. 3h, 7d — blank = never"></div>
+      <div><label>Rotate every (optional)</label><input id="f-rotate" type="text" placeholder="e.g. 8h, 7d — blank = never"></div>
       <div class="check"><input id="f-gate" type="checkbox" checked><label style="margin:0">Require approval for mutations</label></div>
     </div>
     <label>PII columns</label>
@@ -112,6 +113,12 @@
     <div class="check"><input id="e-exp-change" type="checkbox" onchange="$('#e-exp-fields').style.display = this.checked ? 'block' : 'none'"><label style="margin:0">Change expiry</label></div>
     <div id="e-exp-fields" style="display:none;margin-top:6px">
       <input id="e-ttl" type="text" placeholder="e.g. 3h, 7d — blank = no expiry">
+    </div>
+    <label>Password rotation</label>
+    <div class="hint">Currently: <span id="e-rot-current">manual only</span></div>
+    <div class="check"><input id="e-rot-change" type="checkbox" onchange="$('#e-rot-fields').style.display = this.checked ? 'block' : 'none'"><label style="margin:0">Change rotation interval</label></div>
+    <div id="e-rot-fields" style="display:none;margin-top:6px">
+      <input id="e-rotate" type="text" placeholder="e.g. 8h, 7d — blank = manual only">
     </div>
     <label style="margin-top:12px">PII columns</label>
     <div id="epii-list"></div>
@@ -223,6 +230,24 @@ function expiryText(iso){
   return `expires in ${Math.floor(hrs/24)}d`;
 }
 
+// remaining renders the time from now until an ISO timestamp as a short string.
+function remaining(iso){
+  const ms = new Date(iso) - Date.now();
+  if(ms <= 0) return "now";
+  const mins = Math.floor(ms/60000);
+  if(mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins/60), rem = mins%60;
+  if(hrs < 48) return `${hrs}h${rem?` ${rem}m`:""}`;
+  return `${Math.floor(hrs/24)}d`;
+}
+
+// rotationText renders a connection's automatic-rotation schedule, or "" when
+// the password is only rotated manually.
+function rotationText(c){
+  if(!c.rotate_every) return "";
+  return `rotates every ${c.rotate_every}` + (c.next_rotation_at ? ` (in ${remaining(c.next_rotation_at)})` : "");
+}
+
 async function create() {
   $("#create-err").textContent = "";
   const body = {
@@ -232,11 +257,12 @@ async function create() {
     gate_mutations: $("#f-gate").checked,
     pii_rules: gatherPii(),
     ttl: $("#f-ttl").value.trim(),
+    rotate_every: $("#f-rotate").value.trim(),
   };
   const res = await req("/api/connections", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
   const data = await res.json();
   if (!res.ok) { $("#create-err").textContent = data.error || "failed"; return; }
-  $("#f-name").value = ""; $("#f-upstream").value = ""; $("#f-ttl").value = ""; $("#pii-list").innerHTML = "";
+  $("#f-name").value = ""; $("#f-upstream").value = ""; $("#f-ttl").value = ""; $("#f-rotate").value = ""; $("#pii-list").innerHTML = "";
   $("#detect-status").textContent = "";
   load();
 }
@@ -267,6 +293,10 @@ function edit(id) {
   $("#e-exp-change").checked = false;
   $("#e-ttl").value = "";
   $("#e-exp-fields").style.display = "none";
+  $("#e-rot-current").textContent = rotationText(c) || "manual only";
+  $("#e-rot-change").checked = false;
+  $("#e-rotate").value = "";
+  $("#e-rot-fields").style.display = "none";
   $("#edit-err").textContent = "";
   $("#edit-detect-status").textContent = "";
   $("#edit-overlay").style.display = "flex";
@@ -286,6 +316,8 @@ async function saveEdit() {
   // Only touch the expiry when the operator opted in, so editing other fields
   // leaves it unchanged. Blank ttl = clear (no expiry); a value = now+ttl.
   if ($("#e-exp-change").checked) body.ttl = $("#e-ttl").value.trim();
+  // Same opt-in for the rotation interval: blank = manual only, a value sets it.
+  if ($("#e-rot-change").checked) body.rotate_every = $("#e-rotate").value.trim();
   const res = await req(`/api/connections/${editId}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
   if (!res.ok) { const d = await res.json().catch(()=>({})); $("#edit-err").textContent = d.error || "failed"; return; }
   closeEdit();
@@ -316,7 +348,7 @@ async function load() {
       <td>${esc(c.name)}</td>
       <td><code>${esc(c.agent_username)}</code></td>
       <td class="muted"><span class="upstream">${esc(c.upstream_url)}</span></td>
-      <td>${c.max_rows||"∞"} rows<br>${c.gate_mutations?"gated":"open"}<br><span class="muted">${expiryText(c.expires_at)}</span></td>
+      <td>${c.max_rows||"∞"} rows<br>${c.gate_mutations?"gated":"open"}<br><span class="muted">${expiryText(c.expires_at)}</span>${rotationText(c) ? `<br><span class="muted">${esc(rotationText(c))}</span>` : ""}</td>
       <td>${(c.pii_rules||[]).map(r=>`<span class="tag">${esc(r.name)}:${esc(r.action)}</span>`).join("")||'<span class="muted">none</span>'}</td>
       <td class="actions">
         <button class="secondary" onclick="edit(${c.id})">Edit</button>

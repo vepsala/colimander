@@ -266,3 +266,200 @@ func TestValidationErrors(t *testing.T) {
 		t.Error("missing upstream should error")
 	}
 }
+
+func TestRotateDue(t *testing.T) {
+	st := openTest(t)
+	st.UseSecret("admin-token")
+	now := time.Now().UTC()
+
+	hourly, hourlyPw, err := st.Create(CreateInput{Name: "hourly", UpstreamURL: "postgres://u:p@h/d", RotateEvery: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	daily, dailyPw, err := st.Create(CreateInput{Name: "daily", UpstreamURL: "postgres://u:p@h/d", RotateEvery: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manual, manualPw, err := st.Create(CreateInput{Name: "manual", UpstreamURL: "postgres://u:p@h/d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hourly.RotateEvery != time.Hour || hourly.RotatedAt.IsZero() {
+		t.Errorf("create should record the interval and rotated_at: %+v", hourly)
+	}
+	if got := hourly.NextRotation(); !got.Equal(hourly.RotatedAt.Add(time.Hour)) {
+		t.Errorf("next rotation should be rotated_at + interval, got %v", got)
+	}
+	if !manual.NextRotation().IsZero() {
+		t.Error("a connection without an interval has no next rotation")
+	}
+
+	// Nothing is due right after creation.
+	rotated, err := st.RotateDue(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rotated) != 0 {
+		t.Fatalf("nothing should be due yet, got %+v", rotated)
+	}
+
+	// Two hours on, only the hourly connection is due.
+	later := now.Add(2 * time.Hour)
+	rotated, err = st.RotateDue(later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rotated) != 1 || rotated[0].ID != hourly.ID || rotated[0].Name != "hourly" || rotated[0].AgentUsername != hourly.AgentUsername {
+		t.Fatalf("expected only the hourly connection to rotate, got %+v", rotated)
+	}
+	if !rotated[0].NextRotationAt.Equal(later.Add(time.Hour)) {
+		t.Errorf("next rotation should be now+interval, got %v", rotated[0].NextRotationAt)
+	}
+
+	// rotated_at moved to the sweep time; old password is dead, new one works
+	// and is re-displayable.
+	got, err := st.GetByUsername(hourly.AgentUsername)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.RotatedAt.Equal(later.Truncate(time.Nanosecond)) {
+		t.Errorf("rotated_at should be updated to %v, got %v", later, got.RotatedAt)
+	}
+	if got.RotateEvery != time.Hour {
+		t.Errorf("interval must survive rotation, got %v", got.RotateEvery)
+	}
+	if VerifyPassword(got, hourlyPw) {
+		t.Error("old password must stop working after automatic rotation")
+	}
+	conns, _ := st.List()
+	var newPw string
+	for _, c := range conns {
+		if c.ID == hourly.ID {
+			newPw = c.AgentPassword
+		}
+	}
+	if newPw == "" || newPw == hourlyPw {
+		t.Fatalf("List should decrypt the new password, got %q", newPw)
+	}
+	if !VerifyPassword(got, newPw) {
+		t.Error("decrypted password should verify against the new hash")
+	}
+
+	// The others are untouched.
+	for _, tc := range []struct {
+		conn *Connection
+		pw   string
+	}{{daily, dailyPw}, {manual, manualPw}} {
+		g, err := st.GetByUsername(tc.conn.AgentUsername)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !VerifyPassword(g, tc.pw) {
+			t.Errorf("%s: password must not change when not due", tc.conn.Name)
+		}
+		if !g.RotatedAt.Equal(tc.conn.RotatedAt.Truncate(time.Nanosecond)) {
+			t.Errorf("%s: rotated_at must not move when not due", tc.conn.Name)
+		}
+	}
+
+	// Running again at the same instant rotates nothing more.
+	rotated, err = st.RotateDue(later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rotated) != 0 {
+		t.Errorf("already-rotated connection must not rotate twice, got %+v", rotated)
+	}
+}
+
+func TestManualRotateResetsRotatedAt(t *testing.T) {
+	st := openTest(t)
+	conn, _, err := st.Create(CreateInput{Name: "x", UpstreamURL: "postgres://u:p@h/d", RotateEvery: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Backdate the last rotation so a manual rotate has something to move.
+	past := time.Now().UTC().Add(-30 * time.Minute)
+	if _, err := st.db.Exec(`UPDATE connections SET rotated_at = ? WHERE id = ?`, formatTimestamp(past), conn.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now().UTC()
+	if _, err := st.Rotate(conn.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.GetByUsername(conn.AgentUsername)
+	if got.RotatedAt.Before(before.Truncate(time.Second)) {
+		t.Errorf("manual rotate should reset rotated_at to now, got %v", got.RotatedAt)
+	}
+}
+
+func TestUpdateRotateEveryKeepClearSet(t *testing.T) {
+	st := openTest(t)
+	conn, _, err := st.Create(CreateInput{Name: "x", UpstreamURL: "postgres://u:p@h/d", RotateEvery: 8 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// SetRotateEvery=false leaves the interval untouched.
+	if err := st.Update(conn.ID, UpdateInput{Name: "x2"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.GetByUsername(conn.AgentUsername)
+	if got.RotateEvery != 8*time.Hour {
+		t.Errorf("interval should be preserved when SetRotateEvery is false, got %v", got.RotateEvery)
+	}
+
+	// SetRotateEvery with zero turns automatic rotation off.
+	if err := st.Update(conn.ID, UpdateInput{Name: "x3", SetRotateEvery: true}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = st.GetByUsername(conn.AgentUsername)
+	if got.RotateEvery != 0 || !got.NextRotation().IsZero() {
+		t.Errorf("interval should be cleared, got %v", got.RotateEvery)
+	}
+	if n, _ := st.RotateDue(time.Now().UTC().Add(1000 * time.Hour)); len(n) != 0 {
+		t.Errorf("connection with rotation off must never be due, got %+v", n)
+	}
+
+	// SetRotateEvery with a value sets it; rotated_at is not touched.
+	if err := st.Update(conn.ID, UpdateInput{Name: "x4", SetRotateEvery: true, RotateEvery: 2 * time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = st.GetByUsername(conn.AgentUsername)
+	if got.RotateEvery != 2*time.Hour {
+		t.Errorf("interval should be set, got %v", got.RotateEvery)
+	}
+	if !got.RotatedAt.Equal(conn.RotatedAt.Truncate(time.Nanosecond)) {
+		t.Errorf("changing the interval must not move rotated_at: %v vs %v", got.RotatedAt, conn.RotatedAt)
+	}
+}
+
+func TestRotatedAtFallsBackToCreatedAt(t *testing.T) {
+	st := openTest(t)
+	conn, _, err := st.Create(CreateInput{Name: "old", UpstreamURL: "postgres://u:p@h/d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a row from before the column existed.
+	if _, err := st.db.Exec(`UPDATE connections SET rotated_at = '' WHERE id = ?`, conn.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetByUsername(conn.AgentUsername)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.RotatedAt.Equal(got.CreatedAt) || got.RotatedAt.IsZero() {
+		t.Errorf("blank rotated_at should fall back to created_at, got %v (created %v)", got.RotatedAt, got.CreatedAt)
+	}
+	// The migration backfills the blank on the next open.
+	if err := st.migrate(); err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := st.db.QueryRow(`SELECT rotated_at FROM connections WHERE id = ?`, conn.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored == "" {
+		t.Error("migrate should backfill rotated_at from created_at")
+	}
+}

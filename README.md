@@ -107,7 +107,7 @@ with the CLI:
 
 ```bash
 pg-agent-proxy connections list
-pg-agent-proxy connections add    -name <n> -upstream <url> [-max-rows N] [-gate=false] [-pii "col:hash,col2:redact"]
+pg-agent-proxy connections add    -name <n> -upstream <url> [-max-rows N] [-gate=false] [-pii "col:hash,col2:redact"] [-rotate-every 8h]
 pg-agent-proxy connections rotate -id <id>     # new password, old one stops working
 pg-agent-proxy connections rm     -id <id>
 ```
@@ -115,6 +115,17 @@ pg-agent-proxy connections rm     -id <id>
 Each connection has its own `max_rows`, `gate_mutations`, and PII rules, so a
 read-only reporting connection and a guarded admin connection can point at the
 same database with different policies.
+
+Credentials can be short-lived in two ways. A connection can **expire**
+(`ttl`, e.g. `7d`): it stops authenticating at the deadline and is swept from
+the registry. Independently, its password can **rotate automatically**
+(`rotate_every`, e.g. `8h`, or `-rotate-every` in the CLI): a once-a-minute
+sweep mints a new password whenever `rotated_at + rotate_every` has passed,
+storing it exactly like a manual rotate so the dashboard, `GET
+/api/connections` and `connections list` keep showing the current connection
+string (and the next rotation time). Sessions already open are not cut off; the
+old password simply stops working for new ones. A manual rotate restarts the
+interval. Leave `rotate_every` blank (or `0`) for manual rotation only.
 
 ## Configuration
 
