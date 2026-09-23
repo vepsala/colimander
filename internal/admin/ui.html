@@ -11,11 +11,13 @@
   header { padding:18px 24px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:12px; }
   header h1 { font-size:17px; margin:0; font-weight:650; }
   header span { color:var(--muted); font-size:12px; }
-  main { max-width:2260px; margin:0 auto; padding:24px; }
+  main { max-width:1600px; margin:0 auto; padding:24px; }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px; margin-bottom:22px; }
   h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 14px; }
   table { width:100%; border-collapse:collapse; }
-  th,td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  col.c-pii { width:50%; }
+  th,td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top; min-width:120px; }
+  td.upstream-cell { min-width:150px; }
   th { color:var(--muted); font-weight:500; font-size:12px; }
   code { background:#0c0f13; border:1px solid var(--line); border-radius:5px; padding:1px 6px; font:12px ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; }
   label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
@@ -93,6 +95,9 @@
   <div class="panel">
     <h2>Connections</h2>
     <table>
+      <colgroup>
+        <col><col><col><col><col class="c-pii"><col>
+      </colgroup>
       <thead><tr><th>Name</th><th>Agent user</th><th>Upstream</th><th>Limits</th><th>PII</th><th></th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -350,7 +355,7 @@ async function load() {
     <tr class="mainrow">
       <td>${esc(c.name)}</td>
       <td><code>${esc(c.agent_username)}</code></td>
-      <td class="muted"><span class="upstream">${esc(c.upstream_url)}</span></td>
+      <td class="muted upstream-cell"><span class="upstream">${esc(c.upstream_url)}</span></td>
       <td>${c.max_rows||"∞"} rows<br>${c.gate_mutations?"gated":"open"}<br><span class="muted">${expiryText(c.expires_at)}</span>${rotationText(c) ? `<br><span class="muted">${esc(rotationText(c))}</span>` : ""}</td>
       <td>${(c.pii_rules||[]).map(r=>`<span class="tag">${esc(r.name)}:${esc(r.action)}</span>`).join("")||'<span class="muted">none</span>'}</td>
       <td class="actions">
