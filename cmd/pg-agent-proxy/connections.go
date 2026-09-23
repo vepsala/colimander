@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/kotisivukamu/pg-agent-proxy/internal/config"
 	"github.com/kotisivukamu/pg-agent-proxy/internal/policy"
@@ -60,10 +61,15 @@ func connAdd(args []string) {
 	maxRows := fs.Int("max-rows", 1000, "rows above which a read needs approval (0 = unlimited)")
 	gate := fs.Bool("gate", true, "require approval for mutations")
 	piiSpec := fs.String("pii", "", "comma-separated PII rules, e.g. email:hash,ssn:redact,phone:hash")
+	rotateEvery := fs.Duration("rotate-every", 0, "rotate the agent password automatically at this interval, e.g. 8h (0 = never)")
 	_ = fs.Parse(args)
 
 	if *name == "" || *upstream == "" {
 		fmt.Fprintln(os.Stderr, "both -name and -upstream are required")
+		os.Exit(2)
+	}
+	if *rotateEvery < 0 {
+		fmt.Fprintln(os.Stderr, "-rotate-every must not be negative")
 		os.Exit(2)
 	}
 
@@ -76,13 +82,18 @@ func connAdd(args []string) {
 		MaxRows:       *maxRows,
 		GateMutations: *gate,
 		PIIRules:      parsePII(*piiSpec),
+		RotateEvery:   *rotateEvery,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "create failed:", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Created connection %q (agent user: %s)\n\n", conn.Name, conn.AgentUsername)
+	fmt.Printf("Created connection %q (agent user: %s)\n", conn.Name, conn.AgentUsername)
+	if conn.RotateEvery > 0 {
+		fmt.Printf("Password rotates every %s (next: %s)\n", conn.RotateEvery, conn.NextRotation().Format(time.RFC3339))
+	}
+	fmt.Println()
 	fmt.Println("Connection string (password shown only once):")
 	fmt.Println("  " + connString(cfg, conn.AgentUsername, password))
 }
@@ -105,13 +116,18 @@ func connList(args []string) {
 		return
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tNAME\tAGENT USER\tMAX ROWS\tGATE\tPII")
+	fmt.Fprintln(tw, "ID\tNAME\tAGENT USER\tMAX ROWS\tGATE\tPII\tROTATE EVERY\tNEXT ROTATION")
 	for _, c := range conns {
 		var rules []string
 		for _, r := range c.PIIRules {
 			rules = append(rules, r.Name+":"+r.Action)
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%d\t%v\t%s\n", c.ID, c.Name, c.AgentUsername, c.MaxRows, c.GateMutations, strings.Join(rules, ","))
+		rotateEvery, nextRotation := "-", "-"
+		if c.RotateEvery > 0 {
+			rotateEvery = c.RotateEvery.String()
+			nextRotation = c.NextRotation().Format(time.RFC3339)
+		}
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%d\t%v\t%s\t%s\t%s\n", c.ID, c.Name, c.AgentUsername, c.MaxRows, c.GateMutations, strings.Join(rules, ","), rotateEvery, nextRotation)
 	}
 	_ = tw.Flush()
 }

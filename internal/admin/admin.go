@@ -192,17 +192,22 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // token-gated; it returns the agent password and full connection strings so
 // they can be copied to agents at any time (these credentials are revocable).
 type connectionDTO struct {
-	ID               int64            `json:"id"`
-	Name             string           `json:"name"`
-	AgentUsername    string           `json:"agent_username"`
-	AgentPassword    string           `json:"agent_password"`
-	UpstreamURL      string           `json:"upstream_url"`
-	MaxRows          int              `json:"max_rows"`
-	GateMutations    bool             `json:"gate_mutations"`
-	PIIRules         []policy.PIIRule `json:"pii_rules"`
-	CreatedAt        time.Time        `json:"created_at"`
-	ExpiresAt        *time.Time       `json:"expires_at"` // null = never expires
-	ConnectionString string           `json:"connection_string"`
+	ID            int64            `json:"id"`
+	Name          string           `json:"name"`
+	AgentUsername string           `json:"agent_username"`
+	AgentPassword string           `json:"agent_password"`
+	UpstreamURL   string           `json:"upstream_url"`
+	MaxRows       int              `json:"max_rows"`
+	GateMutations bool             `json:"gate_mutations"`
+	PIIRules      []policy.PIIRule `json:"pii_rules"`
+	CreatedAt     time.Time        `json:"created_at"`
+	ExpiresAt     *time.Time       `json:"expires_at"` // null = never expires
+	// RotateEvery is the automatic rotation interval as a Go duration string
+	// ("" = manual rotation only); NextRotationAt is omitted in that case.
+	RotateEvery      string     `json:"rotate_every"`
+	RotatedAt        time.Time  `json:"rotated_at"`
+	NextRotationAt   *time.Time `json:"next_rotation_at,omitempty"`
+	ConnectionString string     `json:"connection_string"`
 }
 
 func (s *Server) toDTO(c store.Connection) connectionDTO {
@@ -216,6 +221,14 @@ func (s *Server) toDTO(c store.Connection) connectionDTO {
 	if !c.ExpiresAt.IsZero() {
 		expiresAt = &c.ExpiresAt
 	}
+	rotateEvery := ""
+	var nextRotation *time.Time
+	if c.RotateEvery > 0 {
+		rotateEvery = c.RotateEvery.String()
+		if next := c.NextRotation(); !next.IsZero() {
+			nextRotation = &next
+		}
+	}
 	return connectionDTO{
 		ID:               c.ID,
 		Name:             c.Name,
@@ -227,6 +240,9 @@ func (s *Server) toDTO(c store.Connection) connectionDTO {
 		PIIRules:         c.PIIRules,
 		CreatedAt:        c.CreatedAt,
 		ExpiresAt:        expiresAt,
+		RotateEvery:      rotateEvery,
+		RotatedAt:        c.RotatedAt,
+		NextRotationAt:   nextRotation,
 		ConnectionString: cs,
 	}
 }
@@ -254,6 +270,11 @@ type createRequest struct {
 	// means never expires. On update, absent (nil) leaves the expiry unchanged,
 	// an empty string clears it, and a value resets it to now+TTL.
 	TTL *string `json:"ttl"`
+	// RotateEvery is a duration like "8h" or "7d" between automatic password
+	// rotations. Same presence semantics as TTL: on create, empty/absent means
+	// manual rotation only; on update, absent leaves the interval unchanged,
+	// an empty string turns automatic rotation off, and a value sets it.
+	RotateEvery *string `json:"rotate_every"`
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -282,6 +303,14 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		in.ExpiresAt = time.Now().UTC().Add(d)
+	}
+	if req.RotateEvery != nil && strings.TrimSpace(*req.RotateEvery) != "" {
+		d, err := parseHumanDuration(*req.RotateEvery, "rotate_every")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		in.RotateEvery = d
 	}
 
 	conn, _, err := s.store.Create(in)
@@ -335,6 +364,19 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			in.ExpiresAt = time.Now().UTC().Add(d)
+		}
+	}
+	// Likewise a present rotate_every means "change the interval": empty turns
+	// automatic rotation off, a value sets it. Absent leaves it untouched.
+	if req.RotateEvery != nil {
+		in.SetRotateEvery = true
+		if strings.TrimSpace(*req.RotateEvery) != "" {
+			d, err := parseHumanDuration(*req.RotateEvery, "rotate_every")
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			in.RotateEvery = d
 		}
 	}
 	if err := s.store.Update(id, in); err != nil {
@@ -512,22 +554,28 @@ func (s *Server) handleDecide(w http.ResponseWriter, r *http.Request) {
 // parseTTL parses a human duration for a connection's time-to-live. It accepts
 // Go durations ("3h", "90m", "45s", "2h30m") plus a plain day suffix ("7d").
 func parseTTL(s string) (time.Duration, error) {
+	return parseHumanDuration(s, "ttl")
+}
+
+// parseHumanDuration parses a positive human duration ("3h", "90m", "2h30m",
+// "7d"); field names the value in error messages.
+func parseHumanDuration(s, field string) (time.Duration, error) {
 	s = strings.TrimSpace(strings.ToLower(s))
 	if n, ok := strings.CutSuffix(s, "d"); ok {
 		days, err := strconv.Atoi(n)
 		if err == nil {
 			if days < 0 {
-				return 0, errors.New("ttl must not be negative")
+				return 0, fmt.Errorf("%s must not be negative", field)
 			}
 			return time.Duration(days) * 24 * time.Hour, nil
 		}
 	}
 	d, err := time.ParseDuration(s)
 	if err != nil {
-		return 0, fmt.Errorf("invalid ttl %q (use e.g. 3h, 90m, 7d)", s)
+		return 0, fmt.Errorf("invalid %s %q (use e.g. 3h, 90m, 7d)", field, s)
 	}
 	if d <= 0 {
-		return 0, errors.New("ttl must be positive")
+		return 0, fmt.Errorf("%s must be positive", field)
 	}
 	return d, nil
 }
