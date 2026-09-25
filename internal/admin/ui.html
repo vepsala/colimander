@@ -52,6 +52,7 @@
   .modal h2 { color:var(--fg); font-size:16px; text-transform:none; letter-spacing:0; margin:0 0 2px; }
   .modal .sub { color:var(--muted); font-size:12px; margin-bottom:6px; }
   .acard { border:1px solid var(--line); border-radius:10px; padding:16px; margin-top:14px; }
+  .acard .adb { font-size:15px; font-weight:600; margin-bottom:6px; }
   .acard .ameta { font-size:12px; margin-bottom:10px; }
   .acard .aquery { display:block; padding:11px 12px; white-space:pre-wrap; word-break:break-word; line-height:1.5; }
   .acard .aact { display:flex; gap:10px; margin-top:14px; }
@@ -387,6 +388,7 @@ async function loadApprovals() {
   $("#approval-title").textContent = items.length === 1 ? "Approval required" : `${items.length} approvals required`;
   $("#approval-cards").innerHTML = items.map(a => `
     <div class="acard">
+      <div class="adb">${esc(a.connection||"")}${a.database?` <span class="muted">· ${esc(a.database)}</span>`:""}</div>
       <div class="ameta"><span class="tag">${esc(a.reason)}</span>${a.row_count?` · ${a.row_count} rows`:""} · <span class="muted">${esc(a.client)}</span> · <span class="muted">${ago(a.created_at)}</span></div>
       <code class="aquery">${esc(a.query||"")}</code>
       <div class="aact">

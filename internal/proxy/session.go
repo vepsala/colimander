@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strconv"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
@@ -43,6 +44,9 @@ type session struct {
 	upstream *pgconn.PgConn
 	policy   *policy.Policy
 	connInfo *store.Connection
+	// upstreamDB describes the upstream target ("dbname @ host:port") for
+	// approval prompts. It never contains credentials.
+	upstreamDB string
 
 	statements map[string]*preparedStmt
 	portals    map[string]*portal
@@ -136,6 +140,7 @@ func (s *session) startup(ctx context.Context) bool {
 		return false
 	}
 	s.upstream = upstream
+	s.upstreamDB = describeUpstream(conn.UpstreamURL)
 
 	return s.completeStartup()
 }
@@ -245,4 +250,14 @@ func (s *session) sendQueryError(err error) {
 func (s *session) fatal(code, message string) {
 	s.be.Send(&pgproto3.ErrorResponse{Severity: "FATAL", Code: code, Message: message})
 	_ = s.be.Flush()
+}
+
+// describeUpstream renders an upstream connection string as "dbname @ host:port",
+// omitting credentials. It returns "" if the string cannot be parsed.
+func describeUpstream(connString string) string {
+	cfg, err := pgconn.ParseConfig(connString)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%s @ %s", cfg.Database, net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port))))
 }

@@ -43,11 +43,13 @@ func (s *session) handleSimpleQuery(ctx context.Context, sql string) {
 // the statement may proceed. On denial it queues an ErrorResponse.
 func (s *session) approveMutation(ctx context.Context, kind policy.Kind, sql string) bool {
 	dec := s.srv.approver.Approve(ctx, approval.Request{
-		ID:        approval.NewID(),
-		Reason:    approval.ReasonMutation,
-		Statement: kind.String(),
-		Query:     sql,
-		Client:    s.conn.RemoteAddr().String(),
+		ID:         approval.NewID(),
+		Reason:     approval.ReasonMutation,
+		Statement:  kind.String(),
+		Query:      sql,
+		Client:     s.conn.RemoteAddr().String(),
+		Connection: s.connInfo.Name,
+		Database:   s.upstreamDB,
 	})
 	if !dec.Approved {
 		s.log.Warn("mutation denied", "reason", dec.Reason)
@@ -98,12 +100,14 @@ func (s *session) streamResult(ctx context.Context, rr *pgconn.ResultReader, sen
 
 	if s.policy.MaxRows() > 0 && len(rows) > s.policy.MaxRows() {
 		dec := s.srv.approver.Approve(ctx, approval.Request{
-			ID:        approval.NewID(),
-			Reason:    approval.ReasonLargeRead,
-			Statement: kind.String(),
-			Query:     query,
-			RowCount:  len(rows),
-			Client:    s.conn.RemoteAddr().String(),
+			ID:         approval.NewID(),
+			Reason:     approval.ReasonLargeRead,
+			Statement:  kind.String(),
+			Query:      query,
+			RowCount:   len(rows),
+			Client:     s.conn.RemoteAddr().String(),
+			Connection: s.connInfo.Name,
+			Database:   s.upstreamDB,
 		})
 		if !dec.Approved {
 			s.log.Warn("large read denied", "rows", len(rows), "reason", dec.Reason)

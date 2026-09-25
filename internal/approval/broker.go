@@ -24,13 +24,15 @@ type pendingReq struct {
 
 // PendingView is the admin-facing snapshot of a waiting request.
 type PendingView struct {
-	ID        string    `json:"id"`
-	Reason    Reason    `json:"reason"`
-	Statement string    `json:"statement"`
-	Query     string    `json:"query"`
-	RowCount  int       `json:"row_count,omitempty"`
-	Client    string    `json:"client"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         string    `json:"id"`
+	Reason     Reason    `json:"reason"`
+	Statement  string    `json:"statement"`
+	Query      string    `json:"query"`
+	RowCount   int       `json:"row_count,omitempty"`
+	Client     string    `json:"client"`
+	Connection string    `json:"connection"`
+	Database   string    `json:"database"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // NewBroker creates a dashboard-backed approver. timeout bounds how long a
@@ -78,13 +80,15 @@ func (b *Broker) Pending() []PendingView {
 	out := make([]PendingView, 0, len(b.pending))
 	for _, p := range b.pending {
 		out = append(out, PendingView{
-			ID:        p.req.ID,
-			Reason:    p.req.Reason,
-			Statement: p.req.Statement,
-			Query:     p.req.Query,
-			RowCount:  p.req.RowCount,
-			Client:    p.req.Client,
-			CreatedAt: p.createdAt,
+			ID:         p.req.ID,
+			Reason:     p.req.Reason,
+			Statement:  p.req.Statement,
+			Query:      p.req.Query,
+			RowCount:   p.req.RowCount,
+			Client:     p.req.Client,
+			Connection: p.req.Connection,
+			Database:   p.req.Database,
+			CreatedAt:  p.createdAt,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })

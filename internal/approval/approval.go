@@ -32,6 +32,11 @@ type Request struct {
 	Query     string `json:"query"`
 	RowCount  int    `json:"row_count,omitempty"`
 	Client    string `json:"client"`
+	// Connection is the registry name of the connection the agent used.
+	Connection string `json:"connection"`
+	// Database identifies the upstream database the statement targets, as
+	// "dbname @ host:port" (never includes credentials).
+	Database string `json:"database"`
 }
 
 // Decision is the outcome of an approval request.
