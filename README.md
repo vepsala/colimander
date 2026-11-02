@@ -9,7 +9,28 @@ This is a local tool I created for myself, because orchestrating multiple dev en
 
 I don't suggest anyone to use this blindly. I made this public because I thought it could be useful for someone to see, "food for thought". 
 
-Outbound web traffic can be monitored per sandbox. Controlling it is a possible next step.
+## What's in it
+
+- **Sealed sandboxes:** one Colima VM per project, with no access to your Mac's files. Create them with `colimander setup` or the app.
+- **Mac app:** one window for sandboxes, egress, broker activity, databases and tokens.
+- **Credential broker:** GitHub, Fly and Doppler calls go through a daemon on your Mac, so the VM only holds a handle that's useless elsewhere. Tokens are encrypted at rest.
+- **Egress monitoring:** see which domains each sandbox's web traffic goes to and how much data was sent. It records and doesn't block or decrypt.
+- **Database proxy:** connect agents to Postgres through local credentials you can rotate. It masks the columns you choose, scans results for things like emails and card numbers, and holds writes for your approval. See [docs/database-proxy.md](docs/database-proxy.md).
+- **Fly tokens:** one click creates a short-lived org token and copies it, for the destructive work you don't want the broker to allow.
+
+None of this is foolproof. It reduces accidental exposure and shows you what's happening, but root inside a VM can get around the VM-side rules, and a determined attacker isn't stopped.
+
+## Getting started
+
+You need macOS, [Colima](https://colima.run), Go 1.26, the Xcode command line tools, and `gh` logged in. `fly` is only needed for Fly tokens.
+
+```sh
+make app
+```
+
+This builds the CLI and `bin/Colimander.app`, restarts the daemon on the new build, and opens the app. The app isn't notarized, so it's meant to be built on the Mac that runs it. If you only changed the app, `make build && open bin/Colimander.app` skips the daemon restart.
+
+Quitting the app doesn't stop anything: your VMs and the daemon keep running. If the daemon stops, VMs lose the broker and the database proxy, and sandboxes with egress monitoring also lose web access until it's back. Nothing restarts it automatically yet, so run `bin/colimander broker start`.
 
 # Documentation
 
@@ -114,6 +135,8 @@ For services that *need* a stable host-side port mapping (e.g., a desktop DB GUI
 
 ### 5. Borrowed-secret slots
 
+*Not built; this and the secret CLI below are design notes, so their references to Keychain predate the encrypted vault.*
+
 Lending a real prod credential temporarily, without rotation pain:
 
 ```
@@ -193,7 +216,7 @@ What's not built:
 - The `colimander scale` resize helper and `colimander health` indicator.
 - A sibling project for remote-VPS environments (e.g. Hetzner) — same model, different substrate.
 
-Build: `go build -o colimander .` from the repo root.
+Build: `make build`, or `go build -o colimander .` for just the CLI.
 
 ## Prior art that informed this
 

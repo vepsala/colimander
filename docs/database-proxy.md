@@ -1,4 +1,4 @@
-# pg-agent-proxy
+# Database proxy
 
 A PostgreSQL wire-protocol proxy that sits in front of your real databases and
 makes them safe to hand to an agent (or a human doing investigation):
@@ -165,7 +165,7 @@ Deploying to Fly.io with Doppler:
 
 ```bash
 doppler secrets set PGPROXY_ADMIN_TOKEN="$(openssl rand -hex 32)"
-# fly.toml: bind admin_listen to 0.0.0.0:6480; the token comes from the env.
+# Bind admin_listen to 0.0.0.0:6480; the token comes from the env.
 ```
 
 ### Approvals
@@ -202,61 +202,13 @@ Expected response:
 
 This is where a mobile 2FA prompt / Slack approval / browser extension plugs in.
 
-## Container image
+## Running it
 
-A multi-arch image (amd64/arm64) is published to GHCR by the `publish` workflow
-on pushes to `main` and on `v*` tags:
+The Colimander daemon runs the proxy for you as a child process, listening on `127.0.0.1:15488`, with its settings in `~/.colimander/db.yaml` and its management screens in the Mac app. Sandboxes reach it as `host.lima.internal:15488`.
 
-```
-ghcr.io/kotisivukamu/pg-agent-proxy:latest
-ghcr.io/kotisivukamu/pg-agent-proxy:<version>
-```
+Credentials are manual on purpose: create a connection in the app, copy its connection string, and paste it where it's needed. Nothing injects them into a VM.
 
-It needs no config file — everything can come from the environment (handy with
-Doppler/Fly):
-
-```bash
-docker run -p 6432:6432 -p 6480:6480 \
-  -v pgproxy-data:/data \
-  -e PGPROXY_DATABASE=/data/pgproxy.db \
-  -e PGPROXY_ADMIN_LISTEN=0.0.0.0:6480 \
-  -e PGPROXY_HASH_SALT="$HASH_SALT" \
-  -e PGPROXY_ADMIN_TOKEN="$ADMIN_TOKEN" \
-  -e PGPROXY_APPROVAL_MODE=dashboard \
-  ghcr.io/kotisivukamu/pg-agent-proxy:latest
-```
-
-Every config key has an env override: `PGPROXY_LISTEN`, `PGPROXY_ADMIN_LISTEN`,
-`PGPROXY_DATABASE`, `PGPROXY_HASH_SALT`, `PGPROXY_REDACT_STRING`,
-`PGPROXY_SCHEMA_FUNCTION`, `PGPROXY_APPROVAL_MODE`, `PGPROXY_APPROVAL_URL`,
-`PGPROXY_APPROVAL_TIMEOUT`, plus `PGPROXY_ADMIN_TOKEN`. Env overrides the file.
-
-The SQLite registry is a single file, so mount a volume at `/data` (or wherever
-`PGPROXY_DATABASE` points) to persist connections across restarts. On Fly.io
-that means a Fly Volume, which pins the app to one machine/region.
-
-### Deploying to Fly.io
-
-[`fly.toml`](fly.toml) deploys one autostop machine with a `/data` volume and
-ACME (Let's Encrypt) TLS. Because the Postgres port is non-standard, it needs a
-**dedicated IPv4**. Secrets come from Fly (synced from Doppler):
-
-```bash
-fly apps create pg-agent-proxy --org <org>
-fly volumes create pgproxy_data --region arn --size 1 -a pg-agent-proxy -y
-fly ips allocate-v4 -a pg-agent-proxy --yes   # dedicated, ~$2/mo (non-80/443 port)
-fly ips allocate-v6 -a pg-agent-proxy
-
-# secrets (e.g. from Doppler): set PGPROXY_ADMIN_TOKEN and PGPROXY_HASH_SALT
-doppler secrets download --no-file --format env | fly secrets import -a pg-agent-proxy
-
-fly deploy -a pg-agent-proxy --remote-only --ha=false
-```
-
-TLS is terminated in the app (`PGPROXY_TLS_MODE=acme`), validated via
-TLS-ALPN-01 on the admin HTTPS port (443), and the trusted cert is reused for
-the Postgres port (5432). Clients connect with `sslmode=verify-full`. Make
-`PGPROXY_TLS_HOSTS` match the app hostname (e.g. `<app>.fly.dev`).
+To run it without the daemon, use `colimander db serve -config config.yaml`. Every config key has an env override: `PGPROXY_LISTEN`, `PGPROXY_ADMIN_LISTEN`, `PGPROXY_DATABASE`, `PGPROXY_HASH_SALT`, `PGPROXY_REDACT_STRING`, `PGPROXY_SCHEMA_FUNCTION`, `PGPROXY_APPROVAL_MODE`, `PGPROXY_APPROVAL_URL`, `PGPROXY_APPROVAL_TIMEOUT`, plus `PGPROXY_ADMIN_TOKEN`. Env overrides the file.
 
 ## Statement classification
 

@@ -36,3 +36,5 @@ go.work.sum
 
 # Build output
 /bin/
+/master.key
+/pgproxy.db
