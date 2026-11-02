@@ -42,7 +42,7 @@ func (b *broker) controlHandler() http.Handler {
 	})
 	mux.HandleFunc("GET /v1/events", b.controlEvents)
 	mux.HandleFunc("GET /v1/egress", func(w http.ResponseWriter, r *http.Request) {
-		summary, err := egressSummary(r.URL.Query().Get("profile"))
+		summary, err := b.summaries.get(auditFile(), r.URL.Query().Get("profile"))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -56,6 +56,9 @@ func (b *broker) controlHandler() http.Handler {
 			return
 		}
 		writeJSON(w, list)
+	})
+	mux.HandleFunc("GET /v1/other-traffic", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, b.other.list())
 	})
 	action := func(pattern, label string, run func(string) error) {
 		mux.HandleFunc("POST /v1/sandboxes/{name}/"+pattern, func(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +117,7 @@ func (b *broker) controlEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	entries, _, err := readAuditFrom(b.auditPath, 0)
+	entries, err := readAuditTail(b.auditPath)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

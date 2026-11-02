@@ -63,6 +63,9 @@ type broker struct {
 	tokenMu sync.Mutex
 	token   string
 	tokenAt time.Time
+
+	summaries egressTotals
+	other     otherTraffic
 }
 
 func stateDir() string {
@@ -152,6 +155,7 @@ func (b *broker) audit(e auditEntry) {
 	data, _ := json.Marshal(e)
 	b.auditMu.Lock()
 	defer b.auditMu.Unlock()
+	rotateAudit(b.auditPath)
 	f, err := os.OpenFile(b.auditPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		log.Printf("audit write: %v", err)
@@ -490,6 +494,8 @@ func brokerRun(args []string) error {
 	defer stopControl()
 	stopEgress := b.serveEgress()
 	defer stopEgress()
+	stopOther := b.other.watch()
+	defer stopOther()
 	stopDB := startDBProxy()
 	defer stopDB()
 	log.Printf("colimander broker listening on %s (audit: %s)", addr, b.auditPath)

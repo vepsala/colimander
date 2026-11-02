@@ -9,7 +9,7 @@ This is a local tool I created for myself, because orchestrating multiple dev en
 
 I don't suggest anyone to use this blindly. I made this public because I thought it could be useful for someone to see, "food for thought". 
 
-On the roadmap would be next to add some socks5 proxy or something like that, making it possible to analyze and control the outbound traffic.
+Outbound web traffic can be monitored per sandbox. Controlling it is a possible next step.
 
 # Documentation
 
@@ -96,24 +96,21 @@ Now `http://myproj.local:3000` and `http://otherproj.local:3000` both work in yo
 
 For services that *need* a stable host-side port mapping (e.g., a desktop DB GUI that only speaks `localhost`), per-profile explicit mappings are declared in the profile YAML and listed by `colimander ports`.
 
-### 4. The credential broker
+### 4. The daemon
 
-A host daemon (`colimanderd`) that:
+`colimander broker run` is the daemon. Everything a VM can reach is on `127.0.0.1`, because VMs reach the Mac's loopback through Lima. Admin actions use private Unix sockets that VMs can't reach.
 
-- Stores real secrets in macOS Keychain. No new crypto.
-- Listens on a per-profile host-only IP/port reachable only from that profile's Lima gateway.
-- Brokers connections: swaps in the real value, can enforce scope (Postgres read-only, GitHub API path allow-list).
-- Identifies the calling VM via per-profile source IP (v1) or mTLS client cert (v2).
-- Logs every redemption to a host audit file.
+- **Credential broker:** proxies GitHub, Fly and Doppler, swapping in real tokens and enforcing policy. VMs identify themselves with a per-profile handle, because every VM's traffic arrives from loopback. Tokens are encrypted in `~/.colimander/vault.db` under a master key file. The key protects stolen backups and disk copies, not against software already running as you.
+- **Egress monitoring:** `colimander egress enable <name>` records a sandbox's web destinations and byte counts. It never decrypts or blocks. See "Egress monitoring limits" below.
+- **Database proxy:** masks PII and gates writes on the way to Postgres, in a separate process. You paste its connection strings where they're needed; nothing injects them. See [docs/database-proxy.md](docs/database-proxy.md).
+- **Mac app:** `cmd/colimander-app` shows sandboxes, egress, broker activity and databases.
+- **Audit log:** `~/.colimander/audit.log`, moved to `audit.log.1` at 50 MB.
 
-The VM gets local-only handles via env injection at start:
+#### Egress monitoring limits
 
-```
-PROD_DB_URL='postgresql://myproj:any@host.lima.internal:15432/app'
-GITHUB_TOKEN='cmd-handle-7af2'
-```
-
-Leaked off-host, these are dead — they point at non-routable addresses or refer to handles only this daemon understands.
+- Only ports 443 and 80 are recorded per sandbox. The Other traffic view samples what's left, but can't say which VM made it and can miss short connections.
+- Root in a VM can remove the rules or use the VM's second route, so this helps notice mistakes rather than stop a determined attacker.
+- With monitoring on, a VM has no HTTPS or HTTP while the daemon is down, and HTTPS without a server name fails.
 
 ### 5. Borrowed-secret slots
 
@@ -168,7 +165,7 @@ What Colimander does **not** defend against:
 
 - A kernel exploit that escapes the VM. Use Lima's hardening flags and don't rely on Colimander if you're running deliberately adversarial code.
 - A user that types the real secret into the VM. We can't help with that.
-- macOS itself being compromised. Keychain is the trust root; if it's gone, everything is gone.
+- macOS itself being compromised. The master key file sits on the same Mac; if your user account is compromised, everything is gone.
 
 ## Open design questions
 
@@ -181,7 +178,7 @@ If you fork this and want a starting point on things I haven't decided:
 
 ## Status
 
-v0 — the lifecycle CLI shell, no broker yet. What's working, validated end-to-end on macOS with an actual VM boot:
+v0. The daemon is described above. What's working in the lifecycle CLI, validated end-to-end on macOS with an actual VM boot:
 
 - `colimander create <name> [--cpu N --memory G --disk G --start]` — writes a marker at `~/.colima/<name>/.colimander.json` plus a colima.yaml that omits the default host home mount.
 - `colimander start <name>` — boots the VM with an empty placeholder mount that suppresses Colima's default `$HOME`/`$TMP` mounts. Verified inside the VM: `/Users/tapio/code`, `~/.ssh`, dotfiles all inaccessible.
@@ -191,7 +188,7 @@ v0 — the lifecycle CLI shell, no broker yet. What's working, validated end-to-
 - **Safety guardrail**: all mutating commands refuse profiles without a Colimander marker unless `--force-unmanaged` is passed. Verified against an existing host with 7 unmanaged profiles (1 running) — guardrail correctly refused every attempt.
 
 What's not built:
-- The credential broker (`colimanderd`) and `secret` subcommands.
+- The `secret` subcommands.
 - The `.local` hostname / `/etc/hosts` wiring for per-profile browser access.
 - The `colimander scale` resize helper and `colimander health` indicator.
 - A sibling project for remote-VPS environments (e.g. Hetzner) — same model, different substrate.

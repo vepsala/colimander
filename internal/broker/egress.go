@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/vepsala/colimander/internal/egress"
@@ -132,37 +133,40 @@ type EgressHost struct {
 	LastSeen    time.Time `json:"last_seen"`
 }
 
-// egressSummary totals recorded flows by destination, most data sent first. An
-// empty profile means every sandbox.
-func egressSummary(profile string) ([]EgressHost, error) {
-	entries, _, err := readAuditFrom(auditFile(), 0)
+// egressTotals keeps running totals, so the app's polling reads only what's new
+// rather than the whole log every few seconds.
+type egressTotals struct {
+	mu     sync.Mutex
+	path   string
+	offset int64
+	totals map[string]*EgressHost
+}
+
+// get returns totals by destination, most data sent first. An empty profile means
+// every sandbox. The first read includes the rotated log.
+func (t *egressTotals) get(path, profile string) ([]EgressHost, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.totals == nil || t.path != path {
+		t.totals, t.path, t.offset = map[string]*EgressHost{}, path, 0
+		old, _, err := readAuditFrom(path+".1", 0)
+		if err != nil {
+			t.totals = nil
+			return nil, err
+		}
+		t.add(old)
+	}
+	entries, offset, err := readAuditFrom(path, t.offset)
 	if err != nil {
 		return nil, err
 	}
-	totals := map[string]*EgressHost{}
-	for _, e := range entries {
-		if e.Surface != "EGRESS" || (profile != "" && e.Profile != profile) {
-			continue
+	t.offset = offset
+	t.add(entries)
+	out := []EgressHost{}
+	for _, h := range t.totals {
+		if profile == "" || h.Profile == profile {
+			out = append(out, *h)
 		}
-		key := e.Profile + "|" + e.Path
-		t := totals[key]
-		if t == nil {
-			t = &EgressHost{Profile: e.Profile, Destination: e.Path}
-			totals[key] = t
-		}
-		t.Connections++
-		if e.Action == "ERROR" {
-			t.Errors++
-		}
-		t.BytesOut += e.BytesOut
-		t.BytesIn += e.BytesIn
-		if e.Time.After(t.LastSeen) {
-			t.LastSeen = e.Time
-		}
-	}
-	out := make([]EgressHost, 0, len(totals))
-	for _, t := range totals {
-		out = append(out, *t)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].BytesOut != out[j].BytesOut {
@@ -171,6 +175,34 @@ func egressSummary(profile string) ([]EgressHost, error) {
 		return out[i].Destination < out[j].Destination
 	})
 	return out, nil
+}
+
+func (t *egressTotals) add(entries []auditEntry) {
+	for _, e := range entries {
+		if e.Surface != "EGRESS" {
+			continue
+		}
+		key := e.Profile + "|" + e.Path
+		h := t.totals[key]
+		if h == nil {
+			h = &EgressHost{Profile: e.Profile, Destination: e.Path}
+			t.totals[key] = h
+		}
+		h.Connections++
+		if e.Action == "ERROR" {
+			h.Errors++
+		}
+		h.BytesOut += e.BytesOut
+		h.BytesIn += e.BytesIn
+		if e.Time.After(h.LastSeen) {
+			h.LastSeen = e.Time
+		}
+	}
+}
+
+func egressSummary(profile string) ([]EgressHost, error) {
+	var t egressTotals
+	return t.get(auditFile(), profile)
 }
 
 func nextEgressPort() int {

@@ -1,6 +1,8 @@
 package broker
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,5 +49,65 @@ func TestDaemonFollowsPolicyForListeners(t *testing.T) {
 	}
 	if got := nextEgressPort(); got != firstEgressPort {
 		t.Errorf("next port = %d", got)
+	}
+}
+
+func TestTotalsSurviveRotationAndCountOnce(t *testing.T) {
+	shortHome(t)
+	b := &broker{auditPath: auditFile()}
+	b.recordFlow(egress.Flow{Profile: "a", Host: "x.test", Port: "443", BytesOut: 10})
+	var totals egressTotals
+	if got, err := totals.get(auditFile(), "a"); err != nil || got[0].BytesOut != 10 {
+		t.Fatalf("first: %+v, %v", got, err)
+	}
+	if err := os.Rename(auditFile(), auditFile()+".1"); err != nil {
+		t.Fatal(err)
+	}
+	b.recordFlow(egress.Flow{Profile: "a", Host: "x.test", Port: "443", BytesOut: 5})
+	got, err := totals.get(auditFile(), "a")
+	if err != nil || got[0].BytesOut != 15 || got[0].Connections != 2 {
+		t.Errorf("running totals: %+v, %v", got, err)
+	}
+	if fresh, _ := egressSummary("a"); fresh[0].BytesOut != 15 {
+		t.Errorf("after restart: %+v", fresh)
+	}
+}
+
+func TestRotateAuditKeepsOneOldFile(t *testing.T) {
+	shortHome(t)
+	path := auditFile()
+	if err := os.WriteFile(path, make([]byte, maxAuditSize+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rotateAudit(path)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("log should have moved: %v", err)
+	}
+	if info, err := os.Stat(path + ".1"); err != nil || info.Size() != maxAuditSize+1 {
+		t.Errorf("rotated: %v", err)
+	}
+}
+
+func TestTailStartsAtAWholeLine(t *testing.T) {
+	shortHome(t)
+	b := &broker{auditPath: auditFile()}
+	long := strings.Repeat("x", 1000)
+	for i := 0; i < (auditTailSize/1000)+50; i++ {
+		b.recordFlow(egress.Flow{Profile: "a", Host: long, Port: "443"})
+	}
+	got, err := readAuditTail(auditFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) == 0 || got[0].Profile != "a" {
+		t.Errorf("tail = %d entries", len(got))
+	}
+}
+
+func TestParseOtherTraffic(t *testing.T) {
+	in := "p6363\nf12\nn192.168.1.102:59660->1.1.1.1:443\nf13\nn192.168.1.102:5000->140.82.1.1:22\nf14\nn192.168.1.102:5001->192.168.1.5:5432\nf15\nn[fe80::1]:1->[2606:4700::1]:443\n"
+	got := parseLsofRemotes(in)
+	if len(got) != 3 || got[0] != "1.1.1.1:443" || got[1] != "140.82.1.1:22" || got[2] != "[2606:4700::1]:443" {
+		t.Errorf("remotes = %v", got)
 	}
 }

@@ -26,7 +26,7 @@ td{padding:5px 8px;border-top:1px solid var(--line);overflow-wrap:anywhere}.num{
 #dbframe{position:fixed;top:0;left:220px;width:calc(100% - 220px);height:100%;border:0;display:none;background:var(--bg)}
 .empty{color:var(--muted);padding:32px 0}.deny{color:var(--bad)}.time{color:var(--muted);white-space:nowrap}
 </style></head><body>
-<aside><h2>Sandboxes</h2><div id="list"></div><h2 style="margin-top:16px">Tools</h2><button class="sb" id="dbnav">Databases</button></aside>
+<aside><h2>Sandboxes</h2><div id="list"></div><h2 style="margin-top:16px">Tools</h2><button class="sb" id="dbnav">Databases<span id="dbbadge" class="tag" hidden></span></button><button class="sb" id="othernav">Other traffic</button></aside>
 <main id="main"></main><iframe id="dbframe" title="Databases"></iframe>
 <script>
 const providers=[["anthropic.com","Anthropic"],["claude.ai","Anthropic"],["openai.com","OpenAI"],["chatgpt.com","OpenAI"],["googleapis.com","Google"],["cursor.sh","Cursor"],["x.ai","xAI"],["openrouter.ai","OpenRouter"],["groq.com","Groq"]];
@@ -46,8 +46,10 @@ async function refresh(){
       const ev=await api("/events?limit=2000");
       state.events=ev.filter(e=>e.profile===state.selected&&e.surface!=="EGRESS").slice(-200).reverse();
     }
+    state.other=await api("/other-traffic");
     state.error=null;
   }catch(e){state.error=e.message}
+  try{const r=await fetch("/db/api/approvals");state.approvals=r.ok?(await r.json()).length:0}catch{state.approvals=0}
   render();
 }
 async function act(path,label){
@@ -65,10 +67,14 @@ function showDB(on){
 }
 function render(){
   const list=document.getElementById("list"),main=document.getElementById("main");
+  const badge=document.getElementById("dbbadge");badge.hidden=!state.approvals;badge.textContent=state.approvals+" waiting";
+  document.getElementById("othernav").setAttribute("aria-current",!!state.showOther);
   list.innerHTML=state.sandboxes.map(s=>`<button class="sb" data-name="${esc(s.name)}" aria-current="${!state.db&&s.name===state.selected}"><span class="dot ${s.suspended_reason?"susp":s.status==="Running"?"on":""}"></span>${esc(s.name)}</button>`).join("");
   const err=state.error?`<div class="banner">${esc(state.error==="daemon not running"?"The Colimander daemon isn't running. Start it with: colimander broker start":state.error)}</div>`:"";
+  const appr=state.approvals&&!state.db?`<div class="banner">${state.approvals} database request${state.approvals>1?"s are":" is"} waiting for approval in Databases. Requests are denied if nobody answers in time.</div>`:"";
+  if(state.showOther){main.innerHTML=err+appr+other();return}
   const s=state.sandboxes.find(x=>x.name===state.selected);
-  if(!s){main.innerHTML=err+(state.error?"":`<div class="empty">No Colimander sandboxes yet. Create one with: colimander setup</div>`);return}
+  if(!s){main.innerHTML=err+appr+(state.error?"":`<div class="empty">No Colimander sandboxes yet. Create one with: colimander setup</div>`);return}
   const b=state.busy,dis=b?"disabled":"";
   const running=s.status==="Running";
   const sus=s.suspended_reason
@@ -77,11 +83,17 @@ function render(){
   const eg=s.egress_on
     ?`<button class="act ${state.confirming==="egoff"?"confirm":""}" data-ask="egoff" data-act="egress/disable" data-label="Turning off monitoring" ${dis||(running?"":"disabled")}>${state.confirming==="egoff"?"Click again to stop":"Stop monitoring"}</button>`
     :`<button class="act" data-act="egress/enable" data-label="Turning on monitoring" ${dis||(running?"":"disabled")}>Monitor egress</button>`;
-  main.innerHTML=err+`<header><h1>${esc(s.name)}</h1><span class="spacer"></span>${b?`<span class="time">${esc(b)}…</span>`:""}${eg}${sus}</header>
+  main.innerHTML=err+appr+`<header><h1>${esc(s.name)}</h1><span class="spacer"></span>${b?`<span class="time">${esc(b)}…</span>`:""}${eg}${sus}</header>
   <div class="sub">${esc(s.status)} · ${s.cpus} CPU · ${size(s.memory)} memory · Egress monitoring ${s.egress_on?"on":"off"}</div>
   ${s.suspended_reason?`<div class="banner">Suspended: ${esc(s.suspended_reason)}. The VM keeps running, but it can't use the broker.</div>`:""}
   <div class="tabs" role="tablist"><button role="tab" data-tab="egress" aria-selected="${state.tab==="egress"}">Egress</button><button role="tab" data-tab="activity" aria-selected="${state.tab==="activity"}">Broker activity</button></div>
   ${state.tab==="egress"?egress(s):activity()}`;
+}
+function other(){
+  const rows=state.other||[];
+  const intro=`<header><h1>Other traffic</h1></header><div class="sub">Connections from all VMs that didn't go through egress monitoring: other ports, and sandboxes with monitoring off. It can't tell which sandbox made them. Checked every few seconds, so very short connections can be missed.</div>`;
+  if(!rows.length)return intro+`<div class="empty">Nothing seen since the daemon started.</div>`;
+  return intro+`<table><thead><tr><th>Address</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>`+rows.map(r=>`<tr><td>${esc(r.remote)}</td><td class="time">${when(r.first_seen)}</td><td class="time">${when(r.last_seen)}</td></tr>`).join("")+`</tbody></table>`;
 }
 function egress(s){
   if(!state.egress.length)return `<div class="empty">${s.egress_on?"No web traffic recorded yet.":"Turn on egress monitoring to record where this sandbox's web traffic goes. Nothing is blocked."}</div>`;
@@ -92,8 +104,9 @@ function activity(){
   return `<table><thead><tr><th>Time</th><th>Service</th><th>Request</th><th>Result</th></tr></thead><tbody>`+state.events.map(e=>`<tr><td class="time">${when(e.time)}</td><td>${esc(e.surface)}</td><td>${esc(e.method)} ${esc(e.path)}</td><td class="${e.action==="DENY"?"deny":""}">${esc(e.action)}${e.detail?" · "+esc(e.detail):""}</td></tr>`).join("")+`</tbody></table>`;
 }
 document.addEventListener("click",e=>{
-  if(e.target.closest("#dbnav")){showDB(true);return}
-  const sb=e.target.closest(".sb");if(sb){state.db&&showDB(false);state.selected=sb.dataset.name;state.confirming=null;state.egress=[];state.events=[];render();refresh();return}
+  if(e.target.closest("#dbnav")){state.showOther=false;showDB(true);return}
+  if(e.target.closest("#othernav")){state.showOther=true;state.db&&showDB(false);render();return}
+  const sb=e.target.closest(".sb");if(sb){state.showOther=false;state.db&&showDB(false);state.selected=sb.dataset.name;state.confirming=null;state.egress=[];state.events=[];render();refresh();return}
   const tab=e.target.closest("[data-tab]");if(tab){state.tab=tab.dataset.tab;render();return}
   const a=e.target.closest("[data-act]");if(!a||a.disabled)return;
   if(a.dataset.ask)ask(a.dataset.ask,a.dataset.act,a.dataset.label);else act(a.dataset.act,a.dataset.label);
