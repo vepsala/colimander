@@ -2,8 +2,6 @@
 package cli
 
 import (
-	"strings"
-	"path/filepath"
 	"context"
 	"flag"
 	"fmt"
@@ -12,6 +10,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"

@@ -22,15 +22,30 @@ None of this is foolproof. It reduces accidental exposure and shows you what's h
 
 ## Getting started
 
-You need macOS, [Colima](https://colima.run), Go 1.26, the Xcode command line tools, and `gh` logged in. `fly` is only needed for Fly tokens.
+### The Mac app
+
+You need:
+
+- macOS on Apple Silicon or Intel, with the Xcode command line tools (`xcode-select --install`)
+- Go 1.26 or newer
+- [Colima](https://colima.run) and `gh`, logged in with `gh auth login`
+- `fly` logged in, only if you want the Fly tokens view
 
 ```sh
+git clone https://github.com/vepsala/colimander.git
+cd colimander
 make app
 ```
 
-This builds the CLI and `bin/Colimander.app`, restarts the daemon on the new build, and opens the app. The app isn't notarized, so it's meant to be built on the Mac that runs it. If you only changed the app, `make build && open bin/Colimander.app` skips the daemon restart.
+This builds the CLI and `bin/Colimander.app`, starts the daemon on the new build (replacing one that's already running, so sandboxes briefly lose the broker), and opens the app. Then use **+ New sandbox** to create your first sandbox.
 
-Quitting the app doesn't stop anything: your VMs and the daemon keep running. If the daemon stops, VMs lose the broker and the database proxy, and sandboxes with egress monitoring also lose web access until it's back. Nothing restarts it automatically yet, so run `bin/colimander broker start`.
+**Opening it again:** run `open bin/Colimander.app`, or copy the app to `/Applications` to find it in Spotlight. The daemon must be running. If the app says it isn't, run `bin/colimander broker start` from the repo folder. Keep `bin/colimander` in place, because the daemon runs from it. Nothing starts the daemon at login yet.
+
+**Updating:** run `git pull`, then `make app`. If only the app changed, quit it and run `make build && open bin/Colimander.app` to leave the daemon running.
+
+**Sharing:** the app isn't notarized, so build it on the Mac that runs it. A copy sent to someone else will be blocked by macOS.
+
+**Quitting** the app doesn't stop anything: your VMs and the daemon keep running. If the daemon stops, VMs lose the broker and the database proxy, and sandboxes with egress monitoring also lose web access until it's back.
 
 ### Without the app
 
