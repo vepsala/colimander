@@ -67,14 +67,16 @@ func (f *Forwarder) handle(c net.Conn) {
 	defer c.Close()
 	start := time.Now()
 	flow := Flow{Profile: f.Profile, Port: f.Port}
+	var seen bytes.Buffer
 	defer func() {
 		flow.Duration = time.Since(start)
-		if f.Record != nil {
+		// A connection that sent nothing carried no traffic, such as a check that
+		// the port is open.
+		if f.Record != nil && seen.Len() > 0 {
 			f.Record(flow)
 		}
 	}()
 
-	var seen bytes.Buffer
 	_ = c.SetReadDeadline(time.Now().Add(peekTimeout))
 	tee := io.TeeReader(io.LimitReader(c, maxPeek), &seen)
 	if f.Port == "443" {

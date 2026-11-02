@@ -127,3 +127,17 @@ func TestRulesExcludePrivateAndUsePerSandboxPorts(t *testing.T) {
 		}
 	}
 }
+
+func TestPortCheckIsNotRecorded(t *testing.T) {
+	addr, flows := start(t, "443", "")
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	select {
+	case f := <-flows:
+		t.Errorf("recorded an empty connection: %+v", f)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
