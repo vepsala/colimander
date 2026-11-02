@@ -29,7 +29,7 @@ install step.
   for streaming (fly logs).
 - `policy.go` — `Policy` shape (incl. `FlyPolicy`, `DopplerPolicy`), default
   deny rules, allow-rule matcher.
-- `tokens.go` — upstream-token storage at `~/.colimander/tokens.json` (0600).
+- `internal/broker/tokens.go` — upstream tokens, encrypted in `~/.colimander/vault.db` under `master.key`.
   Used only by the external brokers; the GitHub broker still sources from
   `gh auth token`.
 - `gitpkt.go` — minimal git pkt-line parser for ref-deletion detection on push.
@@ -72,7 +72,7 @@ install step.
   Tested.
 - **`gh` token is fetched via `gh auth token`** with a 60s cache in the
   broker. Don't add a separate credential store.
-- **Fly/Doppler tokens live in `~/.colimander/tokens.json` (0600).** Don't
+- **Fly/Doppler tokens live encrypted in `~/.colimander/vault.db`.** Don't
   echo them back to the user, don't include in `colimander status` /
   `colimander policy show`, don't commit. The broker reads them at request
   time (no caching needed — they're small).

@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/vepsala/colimander/internal/vault"
 	"io/fs"
 	"strconv"
 	"strings"
@@ -240,17 +241,17 @@ func (s *Store) initKey(path string) error {
 	if err != nil {
 		return err
 	}
-	key, permsFixed, err := loadMasterKey(path)
+	key, permsFixed, err := vault.LoadKey(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		if check != "" {
 			return fmt.Errorf("%w: %s", ErrMasterKeyMissing, path)
 		}
-		if key, err = createMasterKey(path); err != nil {
+		if key, err = vault.CreateKey(path); err != nil {
 			return err
 		}
 		s.report.KeyCreated = true
-		s.report.BackupExcludeErr = excludeFromBackup(path)
+		s.report.BackupExcludeErr = vault.ExcludeFromBackup(path)
 	case err != nil:
 		return err
 	}

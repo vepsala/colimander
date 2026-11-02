@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"github.com/vepsala/colimander/internal/vault"
 	"os"
 	"path/filepath"
 	"testing"
@@ -130,7 +131,7 @@ func TestWrongKeyRefuses(t *testing.T) {
 	st := openAt(t, dir)
 	st.Close()
 	other := filepath.Join(t.TempDir(), "other.key")
-	if _, err := createMasterKey(other); err != nil {
+	if _, err := vault.CreateKey(other); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Open(Options{Path: filepath.Join(dir, "r.db"), MasterKeyFile: other})

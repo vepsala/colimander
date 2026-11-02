@@ -1,6 +1,10 @@
 package broker
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestMatchAllowedEndpoint(t *testing.T) {
 	rules := []EndpointRule{
@@ -82,5 +86,28 @@ func TestFlyPolicyAllowsApp(t *testing.T) {
 	empty := &FlyPolicy{}
 	if empty.allowsApp("anything") {
 		t.Error("empty allowed_apps must deny, not allow all")
+	}
+}
+
+func TestLegacyTokensImportOnce(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".colimander")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"version":1,"profiles":{"a":{"fly":"old-fly"}}}`
+	if err := os.WriteFile(filepath.Join(dir, "tokens.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := getProfileTokens("a")
+	if err != nil || got.Fly != "old-fly" {
+		t.Fatalf("import: %+v, %v", got, err)
+	}
+	if err := clearProfileTokens("a"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := getProfileTokens("a"); got.Fly != "" {
+		t.Errorf("cleared tokens came back from the old file: %+v", got)
 	}
 }

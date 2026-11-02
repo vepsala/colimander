@@ -1,13 +1,6 @@
-// Per-profile upstream tokens for external service brokers (fly.io, doppler).
-//
-// Stored separately from policy.json because:
-//   - Tokens are sensitive; policy.json is 0644 (so the user can hand-edit
-//     rules without sudo). Tokens belong in a file mode 0600.
-//   - Policy is the "what's allowed" — declarative, version-control-friendly.
-//     Tokens are the "how we authenticate upstream" — per-machine, secret,
-//     not for committing.
-//
-// File lives at ~/.colimander/tokens.json, owner-read/write only.
+// Per-profile upstream tokens for external service brokers (fly.io, doppler),
+// encrypted in the vault. policy.json holds what's allowed and stays hand-editable;
+// tokens are how we authenticate upstream, so they never go there.
 
 package broker
 
@@ -18,9 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-)
 
-const tokensFileVersion = 1
+	"github.com/vepsala/colimander/internal/vault"
+)
 
 // ProfileTokens holds the upstream tokens the broker substitutes when
 // proxying to an external service. Empty string = not configured (and the
@@ -30,88 +23,102 @@ type ProfileTokens struct {
 	Doppler string `json:"doppler,omitempty"`
 }
 
-type tokensFile struct {
-	Version  int                      `json:"version"`
-	Profiles map[string]ProfileTokens `json:"profiles"`
-}
-
 var tokensMu sync.Mutex
 
-func tokensPath() string {
-	return filepath.Join(stateDir(), "tokens.json")
-}
-
-func loadTokens() (*tokensFile, error) {
-	data, err := os.ReadFile(tokensPath())
-	if errors.Is(err, os.ErrNotExist) {
-		return &tokensFile{Version: tokensFileVersion, Profiles: map[string]ProfileTokens{}}, nil
-	}
+func openVault() (*vault.Vault, error) {
+	v, err := vault.Open(filepath.Join(stateDir(), "vault.db"), filepath.Join(stateDir(), "master.key"))
 	if err != nil {
 		return nil, err
 	}
-	var f tokensFile
-	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("invalid tokens file at %s: %w", tokensPath(), err)
+	if err := importLegacyTokens(v); err != nil {
+		v.Close()
+		return nil, err
 	}
-	if f.Profiles == nil {
-		f.Profiles = map[string]ProfileTokens{}
-	}
-	return &f, nil
+	return v, nil
 }
 
-func saveTokens(f *tokensFile) error {
-	if err := os.MkdirAll(stateDir(), 0o755); err != nil {
+// importLegacyTokens copies tokens.json into the vault once. The file is left
+// for the user to delete, so going back to an older build stays possible.
+func importLegacyTokens(v *vault.Vault) error {
+	if done, err := v.Get("meta", "tokens_imported"); err != nil || done != "" {
 		return err
 	}
-	data, err := json.MarshalIndent(f, "", "  ")
-	if err != nil {
+	path := filepath.Join(stateDir(), "tokens.json")
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := os.WriteFile(tokensPath(), data, 0o600); err != nil {
-		return err
+	if err == nil {
+		var f struct {
+			Profiles map[string]ProfileTokens `json:"profiles"`
+		}
+		if err := json.Unmarshal(data, &f); err != nil {
+			return fmt.Errorf("invalid tokens file at %s: %w", path, err)
+		}
+		for profile, t := range f.Profiles {
+			if err := putTokens(v, profile, t); err != nil {
+				return err
+			}
+		}
+		fmt.Fprintf(os.Stderr, "Imported %s into the vault. It still holds tokens in plain text: delete it once you won't go back to an older build.\n", path)
 	}
-	// Belt + suspenders: re-chmod in case the file pre-existed at 0644.
-	_ = os.Chmod(tokensPath(), 0o600)
+	return v.Put("meta", "tokens_imported", "1")
+}
+
+func tokenScope(profile string) string { return "profile:" + profile }
+
+func putTokens(v *vault.Vault, profile string, t ProfileTokens) error {
+	if t.Fly != "" {
+		if err := v.Put(tokenScope(profile), "fly", t.Fly); err != nil {
+			return err
+		}
+	}
+	if t.Doppler != "" {
+		if err := v.Put(tokenScope(profile), "doppler", t.Doppler); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 func SetProfileTokens(profile string, t ProfileTokens) error {
 	tokensMu.Lock()
 	defer tokensMu.Unlock()
-	f, err := loadTokens()
+	v, err := openVault()
 	if err != nil {
 		return err
 	}
-	existing := f.Profiles[profile]
-	if t.Fly != "" {
-		existing.Fly = t.Fly
-	}
-	if t.Doppler != "" {
-		existing.Doppler = t.Doppler
-	}
-	f.Profiles[profile] = existing
-	return saveTokens(f)
+	defer v.Close()
+	return putTokens(v, profile, t)
 }
 
 func getProfileTokens(profile string) (ProfileTokens, error) {
 	tokensMu.Lock()
 	defer tokensMu.Unlock()
-	f, err := loadTokens()
+	v, err := openVault()
 	if err != nil {
 		return ProfileTokens{}, err
 	}
-	return f.Profiles[profile], nil
+	defer v.Close()
+	var t ProfileTokens
+	if t.Fly, err = v.Get(tokenScope(profile), "fly"); err != nil {
+		return ProfileTokens{}, err
+	}
+	if t.Doppler, err = v.Get(tokenScope(profile), "doppler"); err != nil {
+		return ProfileTokens{}, err
+	}
+	return t, nil
 }
 
 func clearProfileTokens(profile string) error {
 	tokensMu.Lock()
 	defer tokensMu.Unlock()
-	f, err := loadTokens()
+	v, err := openVault()
 	if err != nil {
 		return err
 	}
-	delete(f.Profiles, profile)
-	return saveTokens(f)
+	defer v.Close()
+	return v.DeleteScope(tokenScope(profile))
 }
 
 // CmdTokens is the `colimander tokens` entrypoint. Subcommands:
@@ -141,7 +148,7 @@ func CmdTokens(args []string) error {
 		if err := SetProfileTokens(profile, pt); err != nil {
 			return err
 		}
-		fmt.Printf("Stored %s token for profile %q in %s.\n", kind, profile, tokensPath())
+		fmt.Printf("Stored %s token for profile %q in %s.\n", kind, profile, filepath.Join(stateDir(), "vault.db"))
 		return nil
 	case "list":
 		if len(args) < 2 {

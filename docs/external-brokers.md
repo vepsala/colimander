@@ -31,7 +31,7 @@ Two on-disk files:
 
 - `~/.colima/<profile>/policy.json` — the rules (committed to your own
   config if you want; safe to share).
-- `~/.colimander/tokens.json` — the upstream tokens (mode `0600`, **never
+- `~/.colimander/vault.db` — the upstream tokens, encrypted under `master.key` (both mode `0600`, **never
   commit**; treat like `~/.aws/credentials`).
 
 And two extra env vars get baked into `/etc/profile.d/colimander.sh` inside
