@@ -24,6 +24,11 @@ type Config struct {
 	// it bound to localhost or behind your own auth — it is unauthenticated.
 	AdminListen string `yaml:"admin_listen"`
 
+	// AdminSocket serves the management UI on a Unix socket (mode 0600) instead of
+	// AdminListen. Under Colimander this keeps it away from sandboxes, which can
+	// reach the Mac's loopback TCP ports.
+	AdminSocket string `yaml:"admin_socket"`
+
 	// Database is the path to the SQLite registry file.
 	Database string `yaml:"database"`
 

@@ -23,10 +23,11 @@ button.act:disabled{opacity:.5;cursor:default}button.act.confirm{border-color:va
 table{width:100%;border-collapse:collapse}th{font-size:11px;font-weight:600;color:var(--muted);text-align:left;padding:4px 8px}
 td{padding:5px 8px;border-top:1px solid var(--line);overflow-wrap:anywhere}.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}th.num{text-align:right}
 .tag{font-size:11px;padding:0 6px;border-radius:4px;background:var(--warnbg);color:var(--warn);margin-left:6px;white-space:nowrap}
+#dbframe{position:fixed;top:0;left:220px;width:calc(100% - 220px);height:100%;border:0;display:none;background:var(--bg)}
 .empty{color:var(--muted);padding:32px 0}.deny{color:var(--bad)}.time{color:var(--muted);white-space:nowrap}
 </style></head><body>
-<aside><h2>Sandboxes</h2><div id="list"></div></aside>
-<main id="main"></main>
+<aside><h2>Sandboxes</h2><div id="list"></div><h2 style="margin-top:16px">Tools</h2><button class="sb" id="dbnav">Databases</button></aside>
+<main id="main"></main><iframe id="dbframe" title="Databases"></iframe>
 <script>
 const providers=[["anthropic.com","Anthropic"],["claude.ai","Anthropic"],["openai.com","OpenAI"],["chatgpt.com","OpenAI"],["googleapis.com","Google"],["cursor.sh","Cursor"],["x.ai","xAI"],["openrouter.ai","OpenRouter"],["groq.com","Groq"]];
 let state={sandboxes:[],selected:null,tab:"egress",egress:[],events:[],error:null,busy:null,confirming:null};
@@ -55,9 +56,16 @@ async function act(path,label){
   state.busy=null;await refresh();
 }
 function ask(key,path,label){if(state.confirming===key)return act(path,label);state.confirming=key;render();setTimeout(()=>{if(state.confirming===key){state.confirming=null;render()}},4000)}
+function showDB(on){
+  state.db=on;const f=document.getElementById("dbframe");
+  if(on&&!f.src)f.src="/db/";
+  f.style.display=on?"block":"none";
+  document.getElementById("dbnav").setAttribute("aria-current",on);
+  render();
+}
 function render(){
   const list=document.getElementById("list"),main=document.getElementById("main");
-  list.innerHTML=state.sandboxes.map(s=>`<button class="sb" data-name="${esc(s.name)}" aria-current="${s.name===state.selected}"><span class="dot ${s.suspended_reason?"susp":s.status==="Running"?"on":""}"></span>${esc(s.name)}</button>`).join("");
+  list.innerHTML=state.sandboxes.map(s=>`<button class="sb" data-name="${esc(s.name)}" aria-current="${!state.db&&s.name===state.selected}"><span class="dot ${s.suspended_reason?"susp":s.status==="Running"?"on":""}"></span>${esc(s.name)}</button>`).join("");
   const err=state.error?`<div class="banner">${esc(state.error==="daemon not running"?"The Colimander daemon isn't running. Start it with: colimander broker start":state.error)}</div>`:"";
   const s=state.sandboxes.find(x=>x.name===state.selected);
   if(!s){main.innerHTML=err+(state.error?"":`<div class="empty">No Colimander sandboxes yet. Create one with: colimander setup</div>`);return}
@@ -84,7 +92,8 @@ function activity(){
   return `<table><thead><tr><th>Time</th><th>Service</th><th>Request</th><th>Result</th></tr></thead><tbody>`+state.events.map(e=>`<tr><td class="time">${when(e.time)}</td><td>${esc(e.surface)}</td><td>${esc(e.method)} ${esc(e.path)}</td><td class="${e.action==="DENY"?"deny":""}">${esc(e.action)}${e.detail?" · "+esc(e.detail):""}</td></tr>`).join("")+`</tbody></table>`;
 }
 document.addEventListener("click",e=>{
-  const sb=e.target.closest(".sb");if(sb){state.selected=sb.dataset.name;state.confirming=null;state.egress=[];state.events=[];render();refresh();return}
+  if(e.target.closest("#dbnav")){showDB(true);return}
+  const sb=e.target.closest(".sb");if(sb){state.db&&showDB(false);state.selected=sb.dataset.name;state.confirming=null;state.egress=[];state.events=[];render();refresh();return}
   const tab=e.target.closest("[data-tab]");if(tab){state.tab=tab.dataset.tab;render();return}
   const a=e.target.closest("[data-act]");if(!a||a.disabled)return;
   if(a.dataset.ask)ask(a.dataset.ask,a.dataset.act,a.dataset.label);else act(a.dataset.act,a.dataset.label);

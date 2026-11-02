@@ -11,12 +11,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/vepsala/colimander/internal/pgproxy/approval"
@@ -151,6 +154,33 @@ func tokenEqual(a, b string) bool {
 
 func isHTTPS(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+// UnverifiedTLS makes connection strings use sslmode=require, for a self-signed
+// certificate that verify-full would reject.
+func (s *Server) UnverifiedTLS() { s.sslMode = "require" }
+
+// ServeSocket runs the admin server on a private Unix socket until ctx is
+// cancelled. File permissions take the place of a login.
+func (s *Server) ServeSocket(ctx context.Context, path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	old := syscall.Umask(0o177)
+	ln, err := net.Listen("unix", path)
+	syscall.Umask(old)
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		<-ctx.Done()
+		_ = srv.Close()
+	}()
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
 // ListenAndServe runs the admin server until ctx is cancelled.

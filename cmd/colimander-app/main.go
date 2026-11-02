@@ -24,7 +24,7 @@ func main() {
 		Height:      680,
 		MinWidth:    640,
 		MinHeight:   400,
-		AssetServer: &assetserver.Options{Handler: appui.Handler(broker.ControlSocket())},
+		AssetServer: &assetserver.Options{Handler: appui.Handler(broker.ControlSocket(), broker.DBAdminSocket())},
 		Mac: &mac.Options{
 			TitleBar: mac.TitleBarHiddenInset(),
 		},

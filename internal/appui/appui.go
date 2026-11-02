@@ -15,11 +15,10 @@ import (
 //go:embed index.html
 var page []byte
 
-// Handler serves the app, reaching the daemon through socket.
-func Handler(socket string) http.Handler {
-	proxy := &httputil.ReverseProxy{
+func toSocket(socket string, path func(string) string) http.Handler {
+	return &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
-			r.Out.URL = &url.URL{Scheme: "http", Host: "daemon", Path: "/v1" + strings.TrimPrefix(r.In.URL.Path, "/api"), RawQuery: r.In.URL.RawQuery}
+			r.Out.URL = &url.URL{Scheme: "http", Host: "daemon", Path: path(r.In.URL.Path), RawQuery: r.In.URL.RawQuery}
 			r.Out.Host = "daemon"
 		},
 		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -29,8 +28,14 @@ func Handler(socket string) http.Handler {
 			http.Error(w, "daemon not running", http.StatusServiceUnavailable)
 		},
 	}
+}
+
+// Handler serves the app, reaching the daemon and the database proxy's admin
+// server through their sockets.
+func Handler(socket, dbSocket string) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/api/", proxy)
+	mux.Handle("/api/", toSocket(socket, func(p string) string { return "/v1" + strings.TrimPrefix(p, "/api") }))
+	mux.Handle("/db/", toSocket(dbSocket, func(p string) string { return strings.TrimPrefix(p, "/db") }))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(page)

@@ -162,14 +162,32 @@
 
 <script>
 const $ = s => document.querySelector(s);
+// BASE is where this page is mounted: "" alone, "/db" inside the Mac app, where
+// there's no login and native confirm and alert dialogs don't exist.
+const BASE = location.pathname.replace(/\/$/, "");
+if (BASE) document.querySelector('form[action="/logout"]')?.remove();
+function dialogBox(message, buttons) {
+  return new Promise(resolve => {
+    const d = document.createElement("dialog");
+    d.style.cssText = "border:1px solid #8884;border-radius:8px;padding:16px;max-width:420px;color:inherit;background:Canvas";
+    const p = document.createElement("p"); p.textContent = message; p.style.marginTop = "0"; d.append(p);
+    for (const [label, value] of buttons) {
+      const b = document.createElement("button"); b.textContent = label; b.type = "button"; b.style.marginRight = "8px";
+      b.onclick = () => { d.close(); d.remove(); resolve(value); }; d.append(b);
+    }
+    document.body.append(d); d.showModal();
+  });
+}
+const ask = m => dialogBox(m, [["Continue", true], ["Cancel", false]]);
+const notify = m => dialogBox(m, [["OK", undefined]]);
 const actions = ["redact","hash","allow"];
 let connsCache = [];
 let editId = null;
 
 // req wraps fetch and bounces to the login page when the session expires.
 async function req(url, opts) {
-  const res = await fetch(url, opts);
-  if (res.status === 401) { location.href = "/"; throw new Error("unauthorized"); }
+  const res = await fetch(BASE + url, opts);
+  if (res.status === 401) { location.href = BASE + "/"; throw new Error("unauthorized"); }
   return res;
 }
 
@@ -284,14 +302,20 @@ async function create() {
   load();
 }
 
+function copyBySelection(el){
+  const r = document.createRange(); r.selectNodeContents(el);
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  document.execCommand("copy");
+}
 function copyText(el){
-  navigator.clipboard.writeText(el.textContent);
+  // The Mac app's web view may refuse the clipboard API, so fall back to selection.
+  navigator.clipboard?.writeText(el.textContent).catch(() => copyBySelection(el)) ?? copyBySelection(el);
   const note = el.parentNode.querySelector(".copied");
   if (note) { note.style.opacity = "1"; setTimeout(() => note.style.opacity = "0", 1000); }
 }
 
 async function resume(id) {
-  if (!confirm("Resume this connection? Check what happened first. It gets a new password, and the old one stays dead.")) return;
+  if (!(await ask("Resume this connection? Check what happened first. It gets a new password, and the old one stays dead."))) return;
   const res = await req(`/api/connections/${id}/resume`, {method:"POST"});
   if (res.ok) load();
 }
@@ -306,7 +330,7 @@ async function loadEvents() {
 }
 
 async function rotate(id) {
-  if (!confirm("Rotate the password? The old one stops working immediately.")) return;
+  if (!(await ask("Rotate the password? The old one stops working immediately."))) return;
   const res = await req(`/api/connections/${id}/rotate`, {method:"POST"});
   if (res.ok) load();
 }
@@ -363,9 +387,9 @@ async function saveEdit() {
 async function del(id) {
   const c = connsCache.find(x => x.id === id);
   const name = c ? c.name : "this connection";
-  if (!confirm(`Delete connection "${name}"?`)) return;
+  if (!(await ask(`Delete connection "${name}"?`))) return;
   const res = await req(`/api/connections/${id}`, {method:"DELETE"});
-  if (!res.ok) { const d = await res.json().catch(()=>({})); alert(d.error || "delete failed"); return; }
+  if (!res.ok) { const d = await res.json().catch(()=>({})); notify(d.error || "delete failed"); return; }
   load();
 }
 

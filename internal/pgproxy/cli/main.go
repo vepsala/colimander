@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -57,6 +58,7 @@ func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	cfgPath := fs.String("config", "config.yaml", "path to the configuration file")
 	debug := fs.Bool("debug", false, "enable debug logging")
+	exitWithStdin := fs.Bool("exit-with-stdin", false, "exit when stdin closes, so a parent's death stops this process")
 	_ = fs.Parse(args)
 
 	log := newLogger(*debug)
@@ -78,6 +80,12 @@ func runServe(args []string) {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if *exitWithStdin {
+		go func() {
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			stop()
+		}()
+	}
 
 	// TLS provider shared by the proxy port and the admin HTTPS listener (which
 	// also answers ACME challenges).
@@ -99,6 +107,8 @@ func runServe(args []string) {
 
 	startAdmin := true
 	switch {
+	case cfg.AdminSocket != "":
+		log.Info("admin UI on private socket", "path", cfg.AdminSocket)
 	case adminToken != "":
 		log.Info("admin UI authentication enabled (PGPROXY_ADMIN_TOKEN)")
 	case isLoopback(cfg.AdminListen):
@@ -124,7 +134,16 @@ func runServe(args []string) {
 				advertise = cfg.Listen
 			}
 			adminSrv := admin.New(st, advertise, adminToken, broker, adminTLS, log)
-			if err := adminSrv.ListenAndServe(ctx, cfg.AdminListen); err != nil {
+			if cfg.TLS.Mode == "self_signed" {
+				adminSrv.UnverifiedTLS()
+			}
+			var err error
+			if cfg.AdminSocket != "" {
+				err = adminSrv.ServeSocket(ctx, cfg.AdminSocket)
+			} else {
+				err = adminSrv.ListenAndServe(ctx, cfg.AdminListen)
+			}
+			if err != nil {
 				log.Error("admin server stopped", "err", err)
 			}
 		}()

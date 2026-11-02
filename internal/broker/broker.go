@@ -490,6 +490,8 @@ func brokerRun(args []string) error {
 	defer stopControl()
 	stopEgress := b.serveEgress()
 	defer stopEgress()
+	stopDB := startDBProxy()
+	defer stopDB()
 	log.Printf("colimander broker listening on %s (audit: %s)", addr, b.auditPath)
 	return http.ListenAndServe(addr, mux)
 }

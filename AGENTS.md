@@ -110,5 +110,6 @@ agent can do with this permission, and is it reversible?"
 - **VM-facing:** TCP on `127.0.0.1` only. VMs reach it through Lima's host address, so never bind wider.
 - **Control:** `~/.colimander/control.sock` (mode 0600) for the app and CLI. Admin actions go here, never on a TCP port a VM can reach.
 - **Suspension:** `colimander suspend <name>` writes `~/.colimander/suspended/<name>`, which the broker checks on every request. The VM keeps running for inspection. `colimander resume <name>` always issues a new handle.
-- **Database proxy:** `internal/pgproxy`, run as `colimander db`. Not wired into the daemon yet.
+- **Database proxy:** `internal/pgproxy`, run by the daemon as a child process (`colimander db serve`), so a SQL parsing bug can't reach the broker's credentials. Agents connect on `127.0.0.1:15488` using connection strings the user pastes; nothing wires them into VMs. Its admin UI is on `db-admin.sock`.
 - **Egress:** `internal/egress` plus `colimander egress {enable|disable|status} <name>`. nftables rules in the VM send outbound 443 and 80 to per-sandbox ports on the Mac, where the forwarder reads the TLS server name or HTTP Host and counts bytes. Monitoring only: it doesn't decrypt or apply rules. Ports other than 443 and 80 aren't captured, and HTTPS without a server name fails.
+- **Mac app:** `cmd/colimander-app` (Wails, build tags `desktop,production`), with the interface in `internal/appui`. It only talks to the two Unix sockets.
