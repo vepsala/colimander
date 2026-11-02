@@ -32,6 +32,27 @@ This builds the CLI and `bin/Colimander.app`, restarts the daemon on the new bui
 
 Quitting the app doesn't stop anything: your VMs and the daemon keep running. If the daemon stops, VMs lose the broker and the database proxy, and sandboxes with egress monitoring also lose web access until it's back. Nothing restarts it automatically yet, so run `bin/colimander broker start`.
 
+### Without the app
+
+The app is optional. You can build just the CLI, which needs only Go:
+
+```sh
+go build -o colimander .
+./colimander broker start
+```
+
+| Task | Command |
+|---|---|
+| New sandbox | `colimander setup` |
+| Start, stop, open a shell | `colimander start\|stop\|ssh <name>` |
+| Egress monitoring | `colimander egress enable\|disable\|status <name>` |
+| Broker activity | `colimander logs` |
+| Suspend or resume | `colimander suspend\|resume <name>` |
+| Fly and Doppler broker tokens | `colimander tokens set <name> fly <token>` |
+| Database connections | `colimander db connections add\|list\|rotate\|resume\|rm` |
+
+Three things are app-only for now: approving database writes, the one-click Fly tokens view, and the Other traffic view. Without the app, writes on a connection with approvals on are denied after the timeout, so either use connections that don't require approval or set a different `approval` mode in `~/.colimander/db.yaml`.
+
 # Documentation
 
 Everything from here on is auto generated with LLM and I barely read it:

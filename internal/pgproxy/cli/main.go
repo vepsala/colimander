@@ -2,6 +2,8 @@
 package cli
 
 import (
+	"strings"
+	"path/filepath"
 	"context"
 	"flag"
 	"fmt"
@@ -22,11 +24,33 @@ import (
 	"github.com/vepsala/colimander/internal/pgproxy/store"
 )
 
+// defaultConfigPath is the config the Colimander daemon runs the proxy with, so
+// these commands manage the same connections as the app. A relative default would
+// create a separate, empty registry in whatever directory they're run from.
+func defaultConfigPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".colimander", "db.yaml")
+}
+
+func hasConfigFlag(args []string) bool {
+	for _, a := range args {
+		if a == "-config" || a == "--config" || strings.HasPrefix(a, "-config=") || strings.HasPrefix(a, "--config=") {
+			return true
+		}
+	}
+	return false
+}
+
 // Run dispatches "colimander db" subcommands.
 func Run(args []string) error {
 	cmd := "help"
 	if len(args) > 0 {
 		cmd, args = args[0], args[1:]
+	}
+	if (cmd == "connections" || cmd == "conn" || cmd == "serve") && !hasConfigFlag(args) {
+		if _, err := os.Stat(defaultConfigPath()); err != nil {
+			return fmt.Errorf("%s doesn't exist yet. Run `colimander broker start` first, or pass -config", defaultConfigPath())
+		}
 	}
 	switch cmd {
 	case "serve":
@@ -56,7 +80,7 @@ Commands:
 
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	cfgPath := fs.String("config", "config.yaml", "path to the configuration file")
+	cfgPath := fs.String("config", defaultConfigPath(), "path to the configuration file")
 	debug := fs.Bool("debug", false, "enable debug logging")
 	exitWithStdin := fs.Bool("exit-with-stdin", false, "exit when stdin closes, so a parent's death stops this process")
 	_ = fs.Parse(args)

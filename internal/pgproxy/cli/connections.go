@@ -19,7 +19,7 @@ import (
 // runConnections handles the `connections` subcommands.
 func runConnections(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: pg-agent-proxy connections add|list|rotate|resume|rm [flags]")
+		fmt.Fprintln(os.Stderr, "usage: colimander db connections add|list|rotate|resume|rm [flags]")
 		os.Exit(2)
 	}
 	sub, rest := args[0], args[1:]
@@ -61,7 +61,7 @@ func openStore(cfgPath string) (*store.Store, *config.Config) {
 
 func connAdd(args []string) {
 	fs := flag.NewFlagSet("connections add", flag.ExitOnError)
-	cfgPath := fs.String("config", "config.yaml", "config file")
+	cfgPath := fs.String("config", defaultConfigPath(), "config file")
 	name := fs.String("name", "", "connection name (required)")
 	upstream := fs.String("upstream", "", "upstream connection string (required)")
 	maxRows := fs.Int("max-rows", 1000, "rows above which a read needs approval (0 = unlimited)")
@@ -110,7 +110,7 @@ func connAdd(args []string) {
 
 func connList(args []string) {
 	fs := flag.NewFlagSet("connections list", flag.ExitOnError)
-	cfgPath := fs.String("config", "config.yaml", "config file")
+	cfgPath := fs.String("config", defaultConfigPath(), "config file")
 	_ = fs.Parse(args)
 
 	st, _ := openStore(*cfgPath)
@@ -156,7 +156,7 @@ func splitList(s string) []string {
 // connResume reactivates a suspended connection with a new password.
 func connResume(args []string) {
 	fs := flag.NewFlagSet("connections resume", flag.ExitOnError)
-	cfgPath := fs.String("config", "config.yaml", "config file")
+	cfgPath := fs.String("config", defaultConfigPath(), "config file")
 	id := fs.Int64("id", 0, "connection id (required)")
 	_ = fs.Parse(args)
 
@@ -182,7 +182,7 @@ func connResume(args []string) {
 
 func connRotate(args []string) {
 	fs := flag.NewFlagSet("connections rotate", flag.ExitOnError)
-	cfgPath := fs.String("config", "config.yaml", "config file")
+	cfgPath := fs.String("config", defaultConfigPath(), "config file")
 	id := fs.Int64("id", 0, "connection id (required)")
 	_ = fs.Parse(args)
 
@@ -207,7 +207,7 @@ func connRotate(args []string) {
 
 func connRemove(args []string) {
 	fs := flag.NewFlagSet("connections rm", flag.ExitOnError)
-	cfgPath := fs.String("config", "config.yaml", "config file")
+	cfgPath := fs.String("config", defaultConfigPath(), "config file")
 	id := fs.Int64("id", 0, "connection id (required)")
 	_ = fs.Parse(args)
 
