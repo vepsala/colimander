@@ -111,3 +111,4 @@ agent can do with this permission, and is it reversible?"
 - **Control:** `~/.colimander/control.sock` (mode 0600) for the app and CLI. Admin actions go here, never on a TCP port a VM can reach.
 - **Suspension:** `colimander suspend <name>` writes `~/.colimander/suspended/<name>`, which the broker checks on every request. The VM keeps running for inspection. `colimander resume <name>` always issues a new handle.
 - **Database proxy:** `internal/pgproxy`, run as `colimander db`. Not wired into the daemon yet.
+- **Egress:** `internal/egress` plus `colimander egress {enable|disable|status} <name>`. nftables rules in the VM send outbound 443 and 80 to per-sandbox ports on the Mac, where the forwarder reads the TLS server name or HTTP Host and counts bytes. Monitoring only: it doesn't decrypt or apply rules. Ports other than 443 and 80 aren't captured, and HTTPS without a server name fails.

@@ -141,6 +141,10 @@ type auditEntry struct {
 	Path    string    `json:"path"`
 	Action  string    `json:"action"` // "ALLOW" | "DENY"
 	Detail  string    `json:"detail"`
+
+	// Egress only.
+	BytesOut int64 `json:"bytes_out,omitempty"`
+	BytesIn  int64 `json:"bytes_in,omitempty"`
 }
 
 func (b *broker) audit(e auditEntry) {
@@ -484,6 +488,8 @@ func brokerRun(args []string) error {
 		return fmt.Errorf("control socket: %w", err)
 	}
 	defer stopControl()
+	stopEgress := b.serveEgress()
+	defer stopEgress()
 	log.Printf("colimander broker listening on %s (audit: %s)", addr, b.auditPath)
 	return http.ListenAndServe(addr, mux)
 }

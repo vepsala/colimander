@@ -1655,6 +1655,7 @@ Commands:
   policy {default|show <name>}        emit default policy JSON, or show a profile's current policy
   packages <name>                     install optional packages (claude-code, opencode, postgres, …) into a profile
   tokens {set|list|clear} ...         manage upstream tokens for fly.io / doppler brokers (~/.colimander/tokens.json)
+  egress {enable|disable|status} <name>  record where a sandbox's web traffic goes
   suspend <name> [reason]             cut a sandbox off from the broker; the VM keeps running
   resume <name>                       restore a suspended sandbox with new credentials
   version                             print version
@@ -1706,6 +1707,8 @@ func main() {
 		err = cmdPackages(os.Args[2:])
 	case "tokens":
 		err = broker.CmdTokens(os.Args[2:])
+	case "egress":
+		err = broker.CmdEgress(os.Args[2:])
 	case "suspend":
 		err = broker.CmdSuspend(os.Args[2:])
 	case "resume":

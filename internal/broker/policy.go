@@ -58,6 +58,10 @@ type Policy struct {
 	// + paths matching AllowedEndpoints get through. Smaller blast radius.
 	FlyPolicy     *FlyPolicy     `json:"fly_policy,omitempty"`
 	DopplerPolicy *DopplerPolicy `json:"doppler_policy,omitempty"`
+
+	// EgressPort is where this sandbox's HTTPS goes on the Mac when monitoring is
+	// on (HTTP uses the next port). 0 means egress isn't monitored.
+	EgressPort int `json:"egress_port,omitempty"`
 }
 
 // EndpointRule is the allowlist primitive shared by Fly and Doppler. A request

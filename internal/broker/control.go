@@ -39,6 +39,14 @@ func (b *broker) controlHandler() http.Handler {
 		writeJSON(w, map[string]any{"version": Version, "pid": os.Getpid()})
 	})
 	mux.HandleFunc("GET /v1/events", b.controlEvents)
+	mux.HandleFunc("GET /v1/egress", func(w http.ResponseWriter, r *http.Request) {
+		summary, err := egressSummary(r.URL.Query().Get("profile"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, summary)
+	})
 	mux.HandleFunc("GET /v1/sandboxes/{name}", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
 		if err := validProfile(name); err != nil {
