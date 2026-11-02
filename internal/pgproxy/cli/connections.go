@@ -1,0 +1,262 @@
+package cli
+
+import (
+	"flag"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/url"
+	"os"
+	"strings"
+	"text/tabwriter"
+	"time"
+
+	"github.com/vepsala/colimander/internal/pgproxy/config"
+	"github.com/vepsala/colimander/internal/pgproxy/policy"
+	"github.com/vepsala/colimander/internal/pgproxy/store"
+)
+
+// runConnections handles the `connections` subcommands.
+func runConnections(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: pg-agent-proxy connections add|list|rotate|resume|rm [flags]")
+		os.Exit(2)
+	}
+	sub, rest := args[0], args[1:]
+	switch sub {
+	case "add":
+		connAdd(rest)
+	case "list", "ls":
+		connList(rest)
+	case "rotate":
+		connRotate(rest)
+	case "resume":
+		connResume(rest)
+	case "rm", "delete":
+		connRemove(rest)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown connections subcommand %q\n", sub)
+		os.Exit(2)
+	}
+}
+
+func openStore(cfgPath string) (*store.Store, *config.Config) {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "configuration error:", err)
+		os.Exit(1)
+	}
+	st, err := store.Open(store.Options{
+		Path:          cfg.Database,
+		MasterKeyFile: cfg.MasterKeyFile,
+		LegacySecret:  os.Getenv("PGPROXY_ADMIN_TOKEN"),
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "open registry failed:", err)
+		os.Exit(1)
+	}
+	logStartup(slog.New(slog.NewTextHandler(os.Stderr, nil)), st.Startup(), cfg.MasterKeyFile)
+	return st, cfg
+}
+
+func connAdd(args []string) {
+	fs := flag.NewFlagSet("connections add", flag.ExitOnError)
+	cfgPath := fs.String("config", "config.yaml", "config file")
+	name := fs.String("name", "", "connection name (required)")
+	upstream := fs.String("upstream", "", "upstream connection string (required)")
+	maxRows := fs.Int("max-rows", 1000, "rows above which a read needs approval (0 = unlimited)")
+	gate := fs.Bool("gate", true, "require approval for mutations")
+	piiSpec := fs.String("pii", "", "comma-separated PII rules, e.g. email:hash,ssn:redact,phone:hash")
+	rotateEvery := fs.Duration("rotate-every", 0, "rotate the agent password automatically at this interval, e.g. 8h (0 = never)")
+	strictAll := fs.Bool("strict-all", false, "treat every table as holding PII until listed in -safe (recommended for production)")
+	safe := fs.String("safe", "", "comma-separated tables and views reviewed as holding no PII")
+	_ = fs.Parse(args)
+
+	if *name == "" || *upstream == "" {
+		fmt.Fprintln(os.Stderr, "both -name and -upstream are required")
+		os.Exit(2)
+	}
+	if *rotateEvery < 0 {
+		fmt.Fprintln(os.Stderr, "-rotate-every must not be negative")
+		os.Exit(2)
+	}
+
+	st, cfg := openStore(*cfgPath)
+	defer st.Close()
+
+	conn, password, err := st.Create(store.CreateInput{
+		Name:          *name,
+		UpstreamURL:   *upstream,
+		MaxRows:       *maxRows,
+		GateMutations: *gate,
+		PIIRules:      parsePII(*piiSpec),
+		RotateEvery:   *rotateEvery,
+		StrictAll:     *strictAll,
+		SafeRelations: splitList(*safe),
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "create failed:", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Created connection %q (agent user: %s)\n", conn.Name, conn.AgentUsername)
+	if conn.RotateEvery > 0 {
+		fmt.Printf("Password rotates every %s (next: %s)\n", conn.RotateEvery, conn.NextRotation().Format(time.RFC3339))
+	}
+	fmt.Println()
+	fmt.Println("Connection string (password shown only once):")
+	fmt.Println("  " + connString(cfg, conn.AgentUsername, password))
+}
+
+func connList(args []string) {
+	fs := flag.NewFlagSet("connections list", flag.ExitOnError)
+	cfgPath := fs.String("config", "config.yaml", "config file")
+	_ = fs.Parse(args)
+
+	st, _ := openStore(*cfgPath)
+	defer st.Close()
+
+	conns, err := st.List()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "list failed:", err)
+		os.Exit(1)
+	}
+	if len(conns) == 0 {
+		fmt.Println("No connections.")
+		return
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tNAME\tAGENT USER\tMAX ROWS\tGATE\tPII\tROTATE EVERY\tNEXT ROTATION")
+	for _, c := range conns {
+		var rules []string
+		for _, r := range c.PIIRules {
+			rules = append(rules, r.Name+":"+r.Action)
+		}
+		rotateEvery, nextRotation := "-", "-"
+		if c.RotateEvery > 0 {
+			rotateEvery = c.RotateEvery.String()
+			nextRotation = c.NextRotation().Format(time.RFC3339)
+		}
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%d\t%v\t%s\t%s\t%s\n", c.ID, c.Name, c.AgentUsername, c.MaxRows, c.GateMutations, strings.Join(rules, ","), rotateEvery, nextRotation)
+	}
+	_ = tw.Flush()
+}
+
+// splitList parses a comma-separated flag value.
+func splitList(s string) []string {
+	out := []string{}
+	for _, item := range strings.Split(s, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// connResume reactivates a suspended connection with a new password.
+func connResume(args []string) {
+	fs := flag.NewFlagSet("connections resume", flag.ExitOnError)
+	cfgPath := fs.String("config", "config.yaml", "config file")
+	id := fs.Int64("id", 0, "connection id (required)")
+	_ = fs.Parse(args)
+
+	st, cfg := openStore(*cfgPath)
+	defer st.Close()
+
+	password, err := st.Resume(*id)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "resume failed:", err)
+		os.Exit(1)
+	}
+	conns, _ := st.List()
+	username := ""
+	for _, c := range conns {
+		if c.ID == *id {
+			username = c.AgentUsername
+		}
+	}
+	_ = st.AddSecurityEvent(*id, username, store.EventResumed, "resumed from the CLI; password rotated", "")
+	fmt.Println("Resumed. New connection string (password shown only once):")
+	fmt.Println("  " + connString(cfg, username, password))
+}
+
+func connRotate(args []string) {
+	fs := flag.NewFlagSet("connections rotate", flag.ExitOnError)
+	cfgPath := fs.String("config", "config.yaml", "config file")
+	id := fs.Int64("id", 0, "connection id (required)")
+	_ = fs.Parse(args)
+
+	st, cfg := openStore(*cfgPath)
+	defer st.Close()
+
+	password, err := st.Rotate(*id)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "rotate failed:", err)
+		os.Exit(1)
+	}
+	conns, _ := st.List()
+	username := ""
+	for _, c := range conns {
+		if c.ID == *id {
+			username = c.AgentUsername
+		}
+	}
+	fmt.Println("New connection string (password shown only once):")
+	fmt.Println("  " + connString(cfg, username, password))
+}
+
+func connRemove(args []string) {
+	fs := flag.NewFlagSet("connections rm", flag.ExitOnError)
+	cfgPath := fs.String("config", "config.yaml", "config file")
+	id := fs.Int64("id", 0, "connection id (required)")
+	_ = fs.Parse(args)
+
+	st, _ := openStore(*cfgPath)
+	defer st.Close()
+
+	if err := st.Delete(*id); err != nil {
+		fmt.Fprintln(os.Stderr, "delete failed:", err)
+		os.Exit(1)
+	}
+	fmt.Println("Deleted connection", *id)
+}
+
+// parsePII parses "email:hash,ssn:redact" into rules.
+func parsePII(spec string) []policy.PIIRule {
+	var rules []policy.PIIRule
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name, action, ok := strings.Cut(part, ":")
+		if !ok {
+			action = "redact"
+		}
+		rules = append(rules, policy.PIIRule{Name: strings.TrimSpace(name), Action: strings.TrimSpace(action)})
+	}
+	return rules
+}
+
+func advertiseFor(cfg *config.Config) string {
+	if cfg.PublicAddr != "" {
+		return cfg.PublicAddr
+	}
+	return cfg.Listen
+}
+
+func connString(cfg *config.Config, username, password string) string {
+	host, port, err := net.SplitHostPort(advertiseFor(cfg))
+	if err != nil {
+		host, port = "127.0.0.1", "6432"
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	sslMode := "disable"
+	if cfg.TLS.Enabled() {
+		sslMode = "verify-full"
+	}
+	return fmt.Sprintf("postgres://%s:%s@%s/postgres?sslmode=%s",
+		url.QueryEscape(username), url.QueryEscape(password), net.JoinHostPort(host, port), sslMode)
+}
