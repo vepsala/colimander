@@ -124,9 +124,12 @@ func TestImportPaths(t *testing.T) {
 	os.MkdirAll(dir, 0o755)
 	file := filepath.Join(home, "file")
 	os.WriteFile(file, nil, 0o644)
+	os.MkdirAll(filepath.Join(home, ".ssh"), 0o700)
 
 	for path, ok := range map[string]bool{
-		dir: true, "~/proj": true, "  ~/proj ": true, "~": true,
+		dir: true, "~/proj": true, "  ~/proj ": true,
+		"~": false, home: false, home + "/": false, "/": false, filepath.Dir(home): false,
+		"~/.ssh": false,
 		"": false, file: false, filepath.Join(home, "missing"): false,
 		"proj": false, "./proj": false, "../proj": false, "~other/proj": false,
 	} {

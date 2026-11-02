@@ -95,6 +95,32 @@ func ValidateImportPath(s string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("%s is not a directory", abs)
 	}
+	return refuseSensitiveImport(abs)
+}
+
+// refuseSensitiveImport keeps credentials out of a sandbox: copying these would
+// put SSH keys, cloud logins and Colimander's own vault inside the VM.
+func refuseSensitiveImport(abs string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	real := func(p string) string {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return r
+		}
+		return p
+	}
+	path, homeDir := real(abs), real(home)
+	if rel, err := filepath.Rel(path, homeDir); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%s holds your whole home folder, including SSH keys and logins. Pick a project folder inside it", abs)
+	}
+	for _, name := range []string{".ssh", ".aws", ".gnupg", ".config", ".colima", ".colimander"} {
+		secret := filepath.Join(homeDir, name)
+		if path == secret || strings.HasPrefix(path, secret+string(filepath.Separator)) {
+			return fmt.Errorf("%s can hold credentials, so it can't be imported into a sandbox", abs)
+		}
+	}
 	return nil
 }
 

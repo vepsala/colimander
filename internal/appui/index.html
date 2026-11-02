@@ -447,7 +447,7 @@ function openWizard(){
 async function loadOptions(){
   state.opts=null;state.optsErr=null;render();
   try{
-    const o=await api("/setup/options"),f=state.wf;state.opts=o;
+    const o=await api("/setup/options"),f=state.wf;state.opts=o;if(!f.import_path&&o.home_dir)f.import_path=o.home_dir.replace(/\/$/,"")+"/";
     if(f&&f.deny===null){const d=o.defaults;Object.assign(f,{cpu:d.cpu,memory:d.memory,disk:d.disk,swap:d.swap,start_broker:d.start_broker,egress:d.egress,deny:o.deny_rules.map(r=>r.id)})}
   }catch(e){state.optsErr=oldDaemon(e.message)}
   render();wizFocus();
@@ -488,6 +488,16 @@ const wizActs={
     wizGo(f.page+1);
   },
   back(){const f=state.wf;f.errs={};wizGo(f.page-1)},
+  async browse(){
+    const f=state.wf;f.browsing=true;f.browseErr=null;render();
+    try{
+      const r=await fetch("/native/pick-folder",{method:"POST"});
+      if(!r.ok)throw new Error("The folder picker isn't available. Type the path instead.");
+      const {path}=await r.json();
+      if(path&&state.wf===f){f.import_path=path;delete f.errs.import_path}
+    }catch(e){f.browseErr=e.message}
+    f.browsing=false;render();
+  },
   cancel(){state.wf=null;state.opts=null;state.setupView=null;render()},
   recheck(){loadOptions()},
   denyall(){const f=state.wf;f.deny=state.opts.deny_rules.map(r=>r.id);render()},
@@ -537,7 +547,7 @@ function wizPage(){
   switch(wizPages[f.page][0]){
     case "name":return `<h2>Name your sandbox</h2><div class="hint">Used for the VM, hostname, and editor SSH alias.</div><div class="row">${wfield("name","Project name",{ph:"my-project",hint:"Lowercase letters, digits and hyphens."})}</div>`;
     case "resources":return `<h2>Resources</h2><div class="row">${wfield("cpu","CPU cores")}${wfield("memory","Memory (GiB)")}</div><div class="row">${wfield("disk","Disk (GiB)")}${wfield("swap","Swap (GiB)",{hint:"0 means none. About half of memory gives headroom."})}</div>`;
-    case "import":return `<h2>Import a directory</h2><div class="hint">A one-time copy when the sandbox is created. After that the VM is the source of truth, and your Mac's copy is no longer touched.</div>${wcheck("import","Import an existing directory into the VM")}${f.import?`<div class="row" data-key="ipath">${wfield("import_path","Path to import",{ph:"~/code/myproject",cls:"wide"})}</div>`:""}`;
+    case "import":return `<h2>Import a directory</h2><div class="hint">A one-time copy when the sandbox is created. After that the VM is the source of truth, and your Mac's copy is no longer touched.</div>${wcheck("import","Import an existing directory into the VM")}${f.import?`<div class="row" data-key="ipath">${wfield("import_path","Path to import",{ph:"/Users/you/code/myproject",cls:"wide"})}<button type="button" class="act" data-wz="browse" style="align-self:flex-end" ${f.browsing?"disabled":""}>Choose folder…</button></div>${f.browseErr?`<div class="banner bad" role="alert" data-key="berr">${esc(f.browseErr)}</div>`:""}`:""}`;
     case "packages":return `<h2>Packages</h2><div class="hint">Installed in the VM after it boots. tmux is always installed. Leave these blank to skip.</div><div class="box" data-key="pk">${o.packages.map(p=>wlist("packages",p.id,`${esc(p.label)}<small>${esc(p.description)}</small>`)).join("")}</div>`;
     case "github":{
       const off=o.deny_rules.length-f.deny.length;

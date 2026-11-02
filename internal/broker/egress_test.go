@@ -76,6 +76,27 @@ func TestTotalsSurviveRotationAndCountOnce(t *testing.T) {
 	}
 }
 
+func TestRotationIsSeenWhenTheNewLogIsAlreadyLonger(t *testing.T) {
+	shortHome(t)
+	b := &broker{auditPath: auditFile()}
+	b.recordFlow(egress.Flow{Profile: "a", Host: "x.test", Port: "443", BytesOut: 1})
+	var totals egressTotals
+	if _, err := totals.get(auditFile(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	b.recordFlow(egress.Flow{Profile: "a", Host: "x.test", Port: "443", BytesOut: 2}) // not yet read when the log moves
+	if err := os.Rename(auditFile(), auditFile()+".1"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		b.recordFlow(egress.Flow{Profile: "a", Host: "x.test", Port: "443", BytesOut: 10})
+	}
+	got, err := totals.get(auditFile(), "a")
+	if err != nil || got[0].BytesOut != 53 || got[0].Connections != 7 {
+		t.Errorf("totals: %+v, %v", got, err)
+	}
+}
+
 func TestRotateAuditKeepsOneOldFile(t *testing.T) {
 	shortHome(t)
 	path := auditFile()

@@ -6,25 +6,51 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"log"
+	"net/http"
+	"os"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/vepsala/colimander/internal/appui"
 	"github.com/vepsala/colimander/internal/broker"
 )
 
+// withFolderPicker adds the one thing the page can't do itself: a native dialog.
+func withFolderPicker(ui http.Handler, ctx *context.Context) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/", ui)
+	mux.HandleFunc("POST /native/pick-folder", func(w http.ResponseWriter, r *http.Request) {
+		home, _ := os.UserHomeDir()
+		path, err := runtime.OpenDirectoryDialog(*ctx, runtime.OpenDialogOptions{
+			Title: "Choose a folder to import", DefaultDirectory: home, CanCreateDirectories: false,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"path": path})
+	})
+	return mux
+}
+
 func main() {
+	appCtx := context.Background()
 	err := wails.Run(&options.App{
 		Title:       "Colimander",
 		Width:       1000,
 		Height:      680,
 		MinWidth:    640,
 		MinHeight:   400,
-		AssetServer: &assetserver.Options{Handler: appui.Handler(broker.ControlSocket(), broker.DBAdminSocket())},
+		AssetServer: &assetserver.Options{Handler: withFolderPicker(appui.Handler(broker.ControlSocket(), broker.DBAdminSocket()), &appCtx)},
+		OnStartup:   func(ctx context.Context) { appCtx = ctx },
 		Mac: &mac.Options{
 			TitleBar: mac.TitleBarHiddenInset(),
 		},

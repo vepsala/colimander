@@ -139,6 +139,7 @@ type egressTotals struct {
 	mu     sync.Mutex
 	path   string
 	offset int64
+	file   os.FileInfo
 	totals map[string]*EgressHost
 }
 
@@ -148,13 +149,27 @@ func (t *egressTotals) get(path, profile string) ([]EgressHost, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.totals == nil || t.path != path {
-		t.totals, t.path, t.offset = map[string]*EgressHost{}, path, 0
+		t.totals, t.path, t.offset, t.file = map[string]*EgressHost{}, path, 0, nil
 		old, _, err := readAuditFrom(path+".1", 0)
 		if err != nil {
 			t.totals = nil
 			return nil, err
 		}
 		t.add(old)
+	}
+	// Size can't reveal a rotation: the new log may already be longer than the
+	// old read position. So compare the file itself, and finish the old one first.
+	info, statErr := os.Stat(path)
+	if statErr == nil && t.file != nil && !os.SameFile(t.file, info) {
+		rest, _, err := readAuditFrom(path+".1", t.offset)
+		if err != nil {
+			return nil, err
+		}
+		t.add(rest)
+		t.offset = 0
+	}
+	if statErr == nil {
+		t.file = info
 	}
 	entries, offset, err := readAuditFrom(path, t.offset)
 	if err != nil {

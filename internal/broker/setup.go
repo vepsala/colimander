@@ -146,6 +146,7 @@ type setupOptions struct {
 	DenyRules []denyRuleOption `json:"deny_rules"`
 	Packages  []packageOption  `json:"packages"`
 	Defaults  any              `json:"defaults"`
+	HomeDir   string           `json:"home_dir"`
 }
 
 type denyRuleOption struct {
@@ -193,6 +194,7 @@ func getSetupOptions() setupOptions {
 		o.Packages = append(o.Packages, packageOption{p.ID, p.Label, p.Description})
 	}
 	o.Defaults = sandbox.Defaults
+	o.HomeDir, _ = os.UserHomeDir()
 	return o
 }
 
