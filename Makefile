@@ -16,6 +16,7 @@ build:
 	rm -rf bin/icon.iconset
 	cp assets/Info.plist $(BUNDLE)/Contents/Info.plist
 	mv bin/colimander-app $(BUNDLE)/Contents/MacOS/colimander-app
+	codesign --force --sign - $(BUNDLE)
 
 app: build
 	bin/colimander broker stop
