@@ -93,3 +93,12 @@ func TestDatabasePathsGoToTheirSocket(t *testing.T) {
 		t.Errorf("admin got %q", got)
 	}
 }
+
+func TestPageIsNativeAndHasNoBlockedDialogs(t *testing.T) {
+	s := string(page)
+	for _, bad := range []string{"<iframe", "confirm(\"", "alert("} {
+		if strings.Contains(s, bad) {
+			t.Errorf("page contains %q", bad)
+		}
+	}
+}

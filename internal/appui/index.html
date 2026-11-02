@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Colimander</title>
 <style>
-:root{color-scheme:light dark;--bg:#fff;--side:#f4f4f2;--fg:#1d1d1b;--muted:#6f6f6a;--line:#e3e3df;--accent:#2563c9;--warn:#b4530a;--warnbg:#fdf3e7;--bad:#b42318;--ok:#2e7d4f}
-@media(prefers-color-scheme:dark){:root{--bg:#1c1c1e;--side:#252527;--fg:#ececea;--muted:#a0a09a;--line:#38383a;--accent:#7aa7f0;--warn:#f0b070;--warnbg:#3a2c1c;--bad:#f08a80;--ok:#7bc79a}}
+:root{color-scheme:light dark;--bg:#fff;--side:#f4f4f2;--fg:#1d1d1b;--muted:#6f6f6a;--line:#e3e3df;--accent:#2563c9;--warn:#b4530a;--warnbg:#fdf3e7;--bad:#b42318;--ok:#2e7d4f;--onaccent:#fff;--badbg:#fcecea;--okbg:#e9f4ed;--well:#f4f4f2}
+@media(prefers-color-scheme:dark){:root{--bg:#1c1c1e;--side:#252527;--fg:#ececea;--muted:#a0a09a;--line:#38383a;--accent:#7aa7f0;--warn:#f0b070;--warnbg:#3a2c1c;--bad:#f08a80;--ok:#7bc79a;--onaccent:#10203a;--badbg:#3a201d;--okbg:#1d3026;--well:#252527}}
 *{box-sizing:border-box}html,body{height:100%;margin:0}
 body{display:flex;background:var(--bg);color:var(--fg);font:13px/1.45 -apple-system,BlinkMacSystemFont,sans-serif}
 aside{width:220px;flex:none;background:var(--side);border-right:1px solid var(--line);padding:38px 8px 8px;overflow:auto;--wails-draggable:drag}
@@ -23,14 +23,47 @@ button.act:disabled{opacity:.5;cursor:default}button.act.confirm{border-color:va
 table{width:100%;border-collapse:collapse}th{font-size:11px;font-weight:600;color:var(--muted);text-align:left;padding:4px 8px}
 td{padding:5px 8px;border-top:1px solid var(--line);overflow-wrap:anywhere}.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}th.num{text-align:right}
 .tag{font-size:11px;padding:0 6px;border-radius:4px;background:var(--warnbg);color:var(--warn);margin-left:6px;white-space:nowrap}
-#dbframe{position:fixed;top:0;left:220px;width:calc(100% - 220px);height:100%;border:0;display:none;background:var(--bg)}
 .empty{color:var(--muted);padding:32px 0}.deny{color:var(--bad)}.time{color:var(--muted);white-space:nowrap}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+h2{font-size:17px;margin:0}h3{font-size:11px;font-weight:600;color:var(--muted);margin:20px 0 6px}
+button.act.primary{background:var(--accent);border-color:var(--accent);color:var(--onaccent)}
+button.act.denybtn{color:var(--bad)}button.act.x{padding:4px 8px;line-height:1}
+.link{border:0;background:none;color:var(--accent);font:inherit;padding:0;margin-bottom:8px;cursor:pointer}
+.banner.bad{background:var(--badbg);color:var(--bad)}.banner.good{background:var(--okbg);color:var(--ok)}
+.banner.row-b{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.tag.first{margin-left:0}.tag.bad{background:var(--badbg);color:var(--bad)}.tag.neutral{background:var(--line);color:var(--fg)}
+.count{font-size:11px;padding:0 5px;border-radius:8px;background:var(--warnbg);color:var(--warn)}
+.hint,small{color:var(--muted);font-size:12px}small{display:block}.hint{margin-bottom:10px}
+code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+code.block{display:block;padding:8px 10px;margin:6px 0;border-radius:6px;background:var(--well);white-space:pre-wrap;max-height:220px;overflow:auto}
+.sel{user-select:text;-webkit-user-select:text;cursor:text}
+.conns{border-top:1px solid var(--line)}
+.conn{display:flex;align-items:center;gap:10px;width:100%;padding:10px 4px;border:0;border-bottom:1px solid var(--line);background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.connmain{flex:1;min-width:0;display:block}.connname{display:block;font-weight:600}.connup,.connmeta{display:block;color:var(--muted);font-size:12px}
+.connup{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chev{color:var(--muted)}
+.csbox{margin:14px 0}.cslabel{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}.copied{color:var(--ok);font-weight:600}.cslabel .act{color:var(--fg)}
+.status{font-size:12px;color:var(--muted);margin-top:6px}.status.deny{color:var(--bad)}
+.dl{display:grid;grid-template-columns:110px minmax(0,1fr);gap:4px 12px;margin:14px 0}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
+.ev{padding:8px 0;border-top:1px solid var(--line)}.evhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.card{border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px}.cardhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.cardhead .tag{margin-left:0}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.dbform{max-width:640px}.row{display:flex;gap:12px;flex-wrap:wrap}
+.fld{display:block;flex:1 1 150px;min-width:0;margin-top:10px}.fld.wide{flex:2 1 240px}.fld>span{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}
+input[type=text],select{font:inherit;width:100%;min-width:0;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:inherit}
+input[type=text]::placeholder{color:var(--muted);opacity:.8}
+.chk{display:flex;align-items:flex-start;gap:8px;margin-top:10px}.chk input{margin:2px 0 0;flex:none}
+.fldset{margin-top:10px}.fldset .chk{margin-top:4px}
+.rule{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 84px auto;gap:6px;margin-bottom:6px}.rule .from{grid-column:1/-1;margin-top:-2px}
+.sugs{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:10px}.sughead{display:flex;align-items:center;gap:8px}
+.sug{display:grid;grid-template-columns:minmax(0,1fr) 84px auto auto;gap:6px;align-items:center;padding-top:8px;margin-top:8px;border-top:1px solid var(--line)}
+@media(max-width:760px){main{padding:24px 16px}.sug{grid-template-columns:84px auto auto 1fr}.sugname{grid-column:1/-1}}
 </style></head><body>
 <aside><h2>Sandboxes</h2><div id="list"></div><h2 style="margin-top:16px">Tools</h2><button class="sb" id="dbnav">Databases<span id="dbbadge" class="tag" hidden></span></button><button class="sb" id="othernav">Other traffic</button></aside>
-<main id="main"></main><iframe id="dbframe" title="Databases"></iframe>
+<main id="main"></main>
 <script>
 const providers=[["anthropic.com","Anthropic"],["claude.ai","Anthropic"],["openai.com","OpenAI"],["chatgpt.com","OpenAI"],["googleapis.com","Google"],["cursor.sh","Cursor"],["x.ai","xAI"],["openrouter.ai","OpenRouter"],["groq.com","Groq"]];
-let state={sandboxes:[],selected:null,tab:"egress",egress:[],events:[],error:null,busy:null,confirming:null};
+let state={sandboxes:[],selected:null,tab:"egress",egress:[],events:[],error:null,busy:null,confirming:null,
+  pending:[],conns:[],secEvents:[],dbLoaded:false,dbError:null,dbNotice:null,dbBusy:null,dbGen:0,dbTab:"connections",dbView:{name:"list"},dbf:null,dbCopied:null};
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const size=n=>n>=1073741824?(n/1073741824).toFixed(1)+" GB":n>=1048576?(n/1048576).toFixed(1)+" MB":n>=1024?(n/1024).toFixed(1)+" KB":n+" B";
 const when=t=>t?new Date(t).toLocaleString(undefined,{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}):"";
@@ -49,7 +82,7 @@ async function refresh(){
     state.other=await api("/other-traffic");
     state.error=null;
   }catch(e){state.error=e.message}
-  try{const r=await fetch("/db/api/approvals");state.approvals=r.ok?(await r.json()).length:0}catch{state.approvals=0}
+  await refreshDB();
   render();
 }
 async function act(path,label){
@@ -59,19 +92,20 @@ async function act(path,label){
 }
 function ask(key,path,label){if(state.confirming===key)return act(path,label);state.confirming=key;render();setTimeout(()=>{if(state.confirming===key){state.confirming=null;render()}},4000)}
 function showDB(on){
-  state.db=on;const f=document.getElementById("dbframe");
-  if(on&&!f.src)f.src="/db/";
-  f.style.display=on?"block":"none";
+  if(on&&!state.db)document.getElementById("main").scrollTop=0;
+  state.db=on;
   document.getElementById("dbnav").setAttribute("aria-current",on);
   render();
+  if(on)refreshDB().then(render);
 }
 function render(){
   const list=document.getElementById("list"),main=document.getElementById("main");
   const badge=document.getElementById("dbbadge");badge.hidden=!state.approvals;badge.textContent=state.approvals+" waiting";
   document.getElementById("othernav").setAttribute("aria-current",!!state.showOther);
-  list.innerHTML=state.sandboxes.map(s=>`<button class="sb" data-name="${esc(s.name)}" aria-current="${!state.db&&s.name===state.selected}"><span class="dot ${s.suspended_reason?"susp":s.status==="Running"?"on":""}"></span>${esc(s.name)}</button>`).join("");
+  patch(list,state.sandboxes.map(s=>`<button class="sb" data-key="${esc(s.name)}" data-name="${esc(s.name)}" aria-current="${!state.db&&s.name===state.selected}"><span class="dot ${s.suspended_reason?"susp":s.status==="Running"?"on":""}"></span>${esc(s.name)}</button>`).join(""));
+  if(state.db){patch(main,dbScreen());return}
   const err=state.error?`<div class="banner">${esc(state.error==="daemon not running"?"The Colimander daemon isn't running. Start it with: colimander broker start":state.error)}</div>`:"";
-  const appr=state.approvals&&!state.db?`<div class="banner">${state.approvals} database request${state.approvals>1?"s are":" is"} waiting for approval in Databases. Requests are denied if nobody answers in time.</div>`:"";
+  const appr=state.approvals&&!state.db?`<div class="banner">${state.approvals} database request${state.approvals>1?"s are":" is"} waiting for approval. Requests are denied if nobody answers in time. <button class="act" data-db="review">Review</button></div>`:"";
   if(state.showOther){main.innerHTML=err+appr+other();return}
   const s=state.sandboxes.find(x=>x.name===state.selected);
   if(!s){main.innerHTML=err+appr+(state.error?"":`<div class="empty">No Colimander sandboxes yet. Create one with: colimander setup</div>`);return}
@@ -103,8 +137,276 @@ function activity(){
   if(!state.events.length)return `<div class="empty">No broker activity recorded.</div>`;
   return `<table><thead><tr><th>Time</th><th>Service</th><th>Request</th><th>Result</th></tr></thead><tbody>`+state.events.map(e=>`<tr><td class="time">${when(e.time)}</td><td>${esc(e.surface)}</td><td>${esc(e.method)} ${esc(e.path)}</td><td class="${e.action==="DENY"?"deny":""}">${esc(e.action)}${e.detail?" · "+esc(e.detail):""}</td></tr>`).join("")+`</tbody></table>`;
 }
+// Databases screen. render() writes an HTML string as everywhere else, but patch()
+// applies it to the existing nodes, so a poll can't take focus, text selection,
+// scroll or a half-pressed button with it. Form values live in state.dbf, updated
+// on every keystroke, so the string always matches what's typed. Give anything
+// that can appear or vanish beside a form a data-key.
+function patch(parent,html){const t=document.createElement("template");t.innerHTML=html;syncKids(parent,t.content)}
+const keyOf=n=>n.nodeType===1?n.getAttribute("data-key"):null;
+function syncKids(from,to){
+  const news=[...to.childNodes],keys=new Set(news.map(keyOf).filter(Boolean));
+  for(const c of [...from.childNodes]){const k=keyOf(c);if(k&&!keys.has(k))c.remove()}
+  const keyed=new Map([...from.childNodes].filter(keyOf).map(c=>[keyOf(c),c]));
+  let cur=from.firstChild;
+  const drop=n=>{const x=n.nextSibling;n.remove();return x};
+  for(const n of news){
+    const k=keyOf(n);
+    let m=k?keyed.get(k):cur&&!keyOf(cur)?cur:null;
+    if(m&&(m.nodeType!==n.nodeType||m.nodeName!==n.nodeName))m=null;
+    if(!m){from.insertBefore(n,cur);continue}
+    // Moving a node blurs whatever is inside it, so clear unkeyed nodes out of its way first.
+    while(k&&cur&&cur!==m&&!keyOf(cur))cur=drop(cur);
+    if(m===cur)cur=cur.nextSibling;else from.insertBefore(m,cur);
+    syncNode(m,n);
+  }
+  while(cur)cur=drop(cur);
+}
+function syncNode(a,b){
+  if(a.nodeType!==1){if(a.nodeValue!==b.nodeValue)a.nodeValue=b.nodeValue;return}
+  for(const {name} of [...a.attributes])if(!b.hasAttribute(name))a.removeAttribute(name);
+  for(const {name,value} of [...b.attributes])if(a.getAttribute(name)!==value)a.setAttribute(name,value);
+  syncKids(a,b);
+  if(a.nodeName==="INPUT"){if(a.type==="checkbox")a.checked=b.hasAttribute("checked");else if(a.value!==b.getAttribute("value"))a.value=b.getAttribute("value")??""}
+  if(a.nodeName==="SELECT"&&a.value!==b.value)a.value=b.value;
+}
+// What's stored can carry the proxy's old name in messages written for agents.
+const plain=s=>String(s??"").replace(/pg-agent-proxy:\s*/g,"").replace(/pg-agent-proxy/g,"The proxy");
+function left(iso){const ms=new Date(iso)-Date.now();if(ms<=0)return "";const mins=Math.max(1,Math.floor(ms/60000)),h=Math.floor(mins/60),m=mins%60;return h>=48?Math.floor(h/24)+"d":h?h+"h"+(m?` ${m}m`:""):m+"m"}
+const expiryText=c=>!c.expires_at?"Never":left(c.expires_at)?`In ${left(c.expires_at)}`:"Expired";
+const isExpired=c=>c.expires_at&&!left(c.expires_at);
+function goDur(s){const m=/^(?:(\d+)h)?(?:(\d+)m)?(?:([\d.]+)s)?$/.exec(s||"");if(!m)return s;const [h,mi,se]=[+m[1]||0,+m[2]||0,+m[3]||0];if(se)return s;return h&&h%24===0&&!mi?h/24+"d":(h?h+"h":"")+(mi?mi+"m":"")}
+const rotationText=c=>c.rotate_every?`Every ${goDur(c.rotate_every)}`+(c.next_rotation_at?` (next in ${left(c.next_rotation_at)||"under a minute"})`:""):"Manual only";
+const limitText=c=>c.max_rows?`${c.max_rows} rows before approval`:"No row limit";
+const waited=t=>{const s=Math.max(0,Math.round((Date.now()-new Date(t))/1000));return s<60?s+"s":Math.floor(s/60)+"m "+s%60+"s"};
+const reasonText={mutation:"Write",large_read:"Large read"};
+async function dbApi(path,opts){
+  const r=await fetch("/db/api"+path,opts),t=await r.text();
+  if(r.ok)return t?JSON.parse(t):null;
+  let m=t.trim();try{m=JSON.parse(t).error||m}catch{}
+  throw new Error(m==="daemon not running"?"The database proxy isn't running. It starts with the daemon: colimander broker start":m||r.statusText);
+}
+const jsonBody=(method,b)=>({method,headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
+async function refreshDB(){
+  const gen=state.dbGen;
+  try{
+    const pending=await dbApi("/approvals"),conns=state.db?await dbApi("/connections"):null,events=state.db?await dbApi("/security-events"):null;
+    // Anything started before a change may describe the world before it.
+    if(gen!==state.dbGen)return;
+    pending.sort((a,b)=>a.created_at<b.created_at?-1:a.created_at>b.created_at?1:a.id<b.id?-1:1);
+    if(state.pending.some(a=>!pending.some(b=>b.id===a.id)))state.dbShift=Date.now();
+    state.pending=pending;state.approvals=pending.length;
+    if(conns){state.conns=conns;state.secEvents=events;state.dbLoaded=true}
+    state.dbError=null;
+  }catch(e){if(gen!==state.dbGen)return;state.dbError=e.message;state.pending=[];state.approvals=0}
+  const v=state.dbView;
+  if(state.dbLoaded&&v.name==="detail"&&!state.conns.some(c=>c.id===v.id)){state.dbView={name:"list"};dbSay("That connection no longer exists.",true)}
+}
+let noticeTimer;
+function dbSay(text,bad){clearTimeout(noticeTimer);state.dbNotice=text?{text,bad}:null;if(text&&!bad)noticeTimer=setTimeout(()=>{state.dbNotice=null;render()},8000)}
+function dbGo(tab,view){state.dbTab=tab;if(view)state.dbView=view;state.confirming=null;dbSay(null);document.getElementById("main").scrollTop=0;render()}
+// dbDo runs a change. Polls keep running, so approvals still show during a slow one.
+async function dbDo(key,fn){
+  state.dbBusy=key;state.confirming=null;state.dbGen++;dbSay(null);render();
+  try{await fn()}catch(e){dbSay(e.message,true)}
+  state.dbBusy=null;state.dbGen++;await refreshDB();render();
+}
+let confirmTimer;
+function dbConfirm(key,fn){
+  if(state.confirming===key)return fn();
+  clearTimeout(confirmTimer);state.confirming=key;render();
+  confirmTimer=setTimeout(()=>{if(state.confirming===key){state.confirming=null;render()}},4000);
+}
+function newCreds(id,r,text){const c=state.conns.find(x=>x.id===id);if(c){c.connection_string=r.connection_string;delete c.suspended_at;c.suspend_reason=""}state.dbCopied=null;dbSay(text)}
+const dbActs={
+  add(){state.dbf={mode:"new",name:"",upstream:"",max_rows:"1000",gate:true,ttl:"",rotate:"",strict:false,safe:"",rules:[]};dbGo("connections",{name:"form"})},
+  edit(a){const c=state.conns.find(x=>x.id===+a.dataset.id);if(!c)return;
+    state.dbf={mode:"edit",id:c.id,name:c.name,max_rows:String(c.max_rows),gate:c.gate_mutations,ttl:"",rotate:"",expChange:false,rotChange:false,strict:c.strict_all,safe:(c.safe_relations||[]).join(", "),rules:(c.pii_rules||[]).map(r=>({k:++ruleKey,name:r.name,table:r.table||"",action:r.action}))};
+    dbGo("connections",{name:"form"})},
+  cancel(){const f=state.dbf;state.dbf=null;dbGo("connections",f.mode==="edit"?{name:"detail",id:f.id}:{name:"list"})},
+  open(a){dbGo("connections",{name:"detail",id:+a.dataset.id})},
+  back(){dbGo("connections",{name:"list"})},
+  review(){state.showOther=false;showDB(true);dbGo("approvals")},
+  copy:dbCopy,
+  rotate(a){const id=+a.dataset.id;dbConfirm("db:rotate:"+id,()=>dbDo("rotate",async()=>newCreds(id,await dbApi(`/connections/${id}/rotate`,{method:"POST"}),"New password issued. Update your agent with the string below. Sessions already open keep running until they disconnect.")))},
+  resume(a){const id=+a.dataset.id;dbConfirm("db:resume:"+id,()=>dbDo("resume",async()=>newCreds(id,await dbApi(`/connections/${id}/resume`,{method:"POST"}),"Resumed with a new password. The old one stays dead.")))},
+  del(a){const id=+a.dataset.id,c=state.conns.find(x=>x.id===id);dbConfirm("db:del:"+id,()=>dbDo("del",async()=>{await dbApi(`/connections/${id}`,{method:"DELETE"});state.conns=state.conns.filter(x=>x.id!==id);state.dbView={name:"list"};dbSay(`Deleted ${c?c.name:"the connection"}.`)}))},
+  decide(a){
+    // Cards move up when one above them goes. Don't let a click meant for one land on the next.
+    if(Date.now()-(state.dbShift||0)<600)return;
+    const id=a.dataset.id,approved=a.dataset.ok==="1";
+    dbDo("decide:"+id,async()=>{await dbApi("/approvals/"+encodeURIComponent(id),jsonBody("POST",{approved}));state.pending=state.pending.filter(p=>p.id!==id);state.approvals=state.pending.length;state.dbShift=Date.now()});
+  },
+  addrule(){const r={k:++ruleKey,name:"",table:"",action:"redact"};state.dbf.rules.push(r);render();document.querySelector(`[data-key="r${r.k}"] input`)?.focus()},
+  rmrule(a){state.dbf.rules=state.dbf.rules.filter(r=>r.k!==+a.dataset.k);render()},
+  detect:dbDetect,
+  accept(a){const f=state.dbf,s=f.sug.find(x=>x.name===a.dataset.name);accept(f,s);f.sug=f.sug.filter(x=>x!==s);render()},
+  dismiss(a){const f=state.dbf;f.sug=f.sug.filter(x=>x.name!==a.dataset.name);render()},
+  acceptall(){const f=state.dbf;f.sug.forEach(s=>accept(f,s));f.sug=[];render()},
+};
+let ruleKey=0;
+// A suggestion only joins the unsaved rule list. The table stays blank even when the
+// column was found in one table, since a blank rule also covers tables added later.
+const accept=(f,s)=>f.rules.push({k:++ruleKey,name:s.name,table:"",action:s.action,from:s.tables});
+async function dbDetect(){
+  const f=state.dbf,up=(f.upstream||"").trim();
+  if(f.mode==="new"&&!up){f.detect={bad:true,text:"Enter the upstream connection string first."};render();return}
+  f.detect={text:"Scanning schema…",busy:true};f.sug=null;render();
+  try{
+    const found=await (f.mode==="new"?dbApi("/detect-pii",jsonBody("POST",{upstream_url:up})):dbApi(`/connections/${f.id}/detect-pii`,{method:"POST"}));
+    const have=new Set(f.rules.map(r=>r.name.trim().toLowerCase()));
+    f.sug=found.filter(s=>!have.has(s.name.toLowerCase()));
+    const skipped=found.length-f.sug.length;
+    f.detect={text:!found.length?"No likely PII columns found.":!f.sug.length?"Every column it found already has a rule.":`Found ${f.sug.length} likely PII column${f.sug.length>1?"s":""}${skipped?`, ${skipped} already covered`:""}. Nothing changes unless you add them and save.`};
+  }catch(e){f.detect={bad:true,text:plain(e.message)}}
+  render();
+}
+async function dbSave(){
+  const f=state.dbf;if(!f||state.dbBusy)return;
+  const fail=m=>{f.err=m;render()};
+  f.err=null;
+  if(!f.name.trim())return fail("Give the connection a name.");
+  if(f.mode==="new"&&!f.upstream.trim())return fail("Enter the upstream connection string.");
+  if(!/^\d+$/.test(f.max_rows.trim()))return fail("Max rows must be a whole number. Use 0 for no limit.");
+  if(f.rules.some(r=>!r.name.trim()&&r.table.trim()))return fail("Every PII rule needs a column.");
+  const body={name:f.name.trim(),max_rows:+f.max_rows.trim(),gate_mutations:f.gate,strict_all:f.strict,
+    safe_relations:f.safe.split(",").map(x=>x.trim()).filter(Boolean),
+    pii_rules:f.rules.filter(r=>r.name.trim()).map(r=>({name:r.name.trim(),table:r.table.trim(),action:r.action}))};
+  if(f.mode==="new"){body.upstream_url=f.upstream.trim();body.ttl=f.ttl.trim();body.rotate_every=f.rotate.trim()}
+  // Expiry and rotation only change when asked: a field sent blank would clear them.
+  else{if(f.expChange)body.ttl=f.ttl.trim();if(f.rotChange)body.rotate_every=f.rotate.trim()}
+  await dbDo("save",async()=>{
+    try{
+      if(f.mode==="new"){
+        const c=await dbApi("/connections",jsonBody("POST",body));
+        state.conns.push(c);state.dbf=null;state.dbCopied=null;state.dbView={name:"detail",id:c.id};
+        dbSay("Connection created. Copy the string below into your agent.");
+      }else{
+        await dbApi("/connections/"+f.id,jsonBody("PUT",body));
+        state.dbf=null;state.dbView={name:"detail",id:f.id};dbSay("Changes saved.");
+      }
+      document.getElementById("main").scrollTop=0;
+    }catch(e){f.err=plain(e.message)}
+  });
+}
+// The synchronous copy goes first: it runs inside the click, and a web view that
+// refuses the clipboard API usually allows it. If both fail, say so rather than
+// claim success, and leave the string selected for Command-C.
+async function dbCopy(){
+  const el=document.getElementById("dbcs");if(!el)return;
+  const sel=getSelection(),range=document.createRange();range.selectNodeContents(el);sel.removeAllRanges();sel.addRange(range);
+  let ok=false;
+  try{ok=document.execCommand("copy")}catch{}
+  if(!ok&&navigator.clipboard)try{await navigator.clipboard.writeText(el.textContent);ok=true}catch{}
+  if(ok)sel.removeAllRanges();
+  state.dbCopied=ok?"ok":"manual";render();
+  if(ok)setTimeout(()=>{state.dbCopied=null;render()},2500);
+}
+const inputAttrs=`type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"`;
+function field(f,label,key,ph,hint,cls){return `<label class="fld ${cls||""}"><span>${label}</span><input ${inputAttrs} data-f="${key}" value="${esc(f[key])}" placeholder="${esc(ph||"")}">${hint?`<small>${hint}</small>`:""}</label>`}
+const check=(f,key,text)=>`<label class="chk"><input type="checkbox" data-f="${key}" ${f[key]?"checked":""}><span>${text}</span></label>`;
+const actionSel=(cur,attr)=>`<select ${attr} aria-label="Action">${["redact","hash","allow"].map(a=>`<option value="${a}" ${a===cur?"selected":""}>${a}</option>`).join("")}</select>`;
+function dbForm(){
+  const f=state.dbf,isNew=f.mode==="new",c=isNew?null:state.conns.find(x=>x.id===f.id),busy=state.dbBusy==="save";
+  return `<form class="dbform" data-key="form-${isNew?"new":"edit-"+f.id}" novalidate>
+  <button type="button" class="link" data-db="cancel">‹ ${isNew?"Connections":esc(c?.name||"Connection")}</button>
+  <h2>${isNew?"New connection":"Edit connection"}</h2>
+  ${isNew?"":c?`<div class="sub">The agent's credentials and the upstream database don't change here.</div>`:`<div class="banner">This connection no longer exists, so these changes can't be saved.</div>`}
+  <div class="row">${field(f,"Name","name","billing-db")}${isNew?field(f,"Upstream connection string","upstream","postgres://user:pass@host:5432/db?sslmode=disable","","wide"):""}</div>
+  ${!isNew&&c?`<dl class="dl"><dt>Agent user</dt><dd><code>${esc(c.agent_username)}</code></dd><dt>Upstream</dt><dd><code>${esc(c.upstream_url)}</code></dd></dl>`:""}
+  <h3>Limits</h3>
+  <div class="row">${field(f,"Max rows before approval","max_rows","1000","0 means no limit.")}</div>
+  ${check(f,"gate","Require approval for writes")}
+  <h3>Credentials</h3>
+  ${isNew?`<div class="row">${field(f,"Expires in","ttl","3h, 7d","Blank means never.")}${field(f,"Rotate password every","rotate","8h, 7d","Blank means manual only.")}</div>`:`
+  <div class="fldset" data-key="exp"><div>Expires: <b>${c?expiryText(c):""}</b></div>${check(f,"expChange","Change expiry")}${f.expChange?`<div class="row" data-key="expf">${field(f,"Expires in, from now","ttl","3h, 7d","Blank means never.")}</div>`:""}</div>
+  <div class="fldset" data-key="rot"><div>Rotation: <b>${c?esc(rotationText(c)):""}</b></div>${check(f,"rotChange","Change rotation interval")}${f.rotChange?`<div class="row" data-key="rotf">${field(f,"Rotate password every","rotate","8h, 7d","Blank means manual only.")}</div>`:""}</div>`}
+  <h3>PII rules</h3>
+  <div class="hint">Redact is the safe default. A hash is generally still personal data under GDPR. Use allow for a column you've reviewed and found harmless. With no table, a rule covers the column in every table.</div>
+  <div class="rules" data-key="rules">${f.rules.map(r=>`<div class="rule" data-key="r${r.k}">
+    <input ${inputAttrs} data-r="${r.k}" data-rf="name" value="${esc(r.name)}" placeholder="column" aria-label="Column">
+    <input ${inputAttrs} data-r="${r.k}" data-rf="table" value="${esc(r.table)}" placeholder="table (optional)" aria-label="Table">
+    ${actionSel(r.action,`data-r="${r.k}" data-rf="action"`)}
+    <button type="button" class="act x" data-db="rmrule" data-k="${r.k}" aria-label="Remove rule">×</button>
+    ${r.from?`<small class="from">Found in ${esc(r.from.join(", "))}</small>`:""}
+  </div>`).join("")}</div>
+  <div class="btns" data-key="ruleacts"><button type="button" class="act" data-db="addrule">Add rule</button><button type="button" class="act" data-db="detect" ${f.detect?.busy?"disabled":""}>Detect from database</button></div>
+  ${f.detect?`<div class="status ${f.detect.bad?"deny":""}" data-key="detect" role="status">${esc(f.detect.text)}</div>`:""}
+  ${f.sug?.length?`<div class="sugs" data-key="sugs"><div class="sughead"><b>Suggested rules</b><span class="spacer"></span><button type="button" class="act" data-db="acceptall">Add all</button></div>${f.sug.map(s=>`<div class="sug" data-key="s-${esc(s.name)}"><div class="sugname"><code>${esc(s.name)}</code><small>Found in ${esc((s.tables||[]).join(", "))}</small></div>${actionSel(s.action,`data-s="${esc(s.name)}"`)}<button type="button" class="act" data-db="accept" data-name="${esc(s.name)}">Add</button><button type="button" class="act" data-db="dismiss" data-name="${esc(s.name)}">Dismiss</button></div>`).join("")}</div>`:""}
+  <h3>Strict rules</h3>
+  ${check(f,"strict","Treat every table as holding PII until marked safe. Recommended for production.")}
+  <div class="row">${field(f,"Tables and views marked safe","safe","products, sales_summary","Separate with commas.","wide")}</div>
+  ${f.err?`<div class="banner bad" data-key="err" role="alert">${esc(f.err)}</div>`:""}
+  <div class="btns" data-key="save"><button type="submit" class="act primary" ${busy?"disabled":""}>${busy?"Saving…":isNew?"Create connection":"Save changes"}</button><button type="button" class="act" data-db="cancel">Cancel</button></div>
+  </form>`;
+}
+function eventRows(evs){
+  return evs.map(e=>`<div class="ev" data-key="e${e.id}"><div class="evhead"><span class="tag first ${e.kind==="suspended"?"bad":e.kind==="resumed"?"neutral":""}">${esc(e.kind)}</span><code>${esc(e.agent_username)}</code><span class="spacer"></span><span class="time">${when(e.at)}</span></div>${e.detail?`<div>${esc(plain(e.detail))}</div>`:""}${e.query?`<code class="block">${esc(e.query)}</code>`:""}</div>`).join("");
+}
+function connDetail(c){
+  const conf=k=>state.confirming===`db:${k}:${c.id}`,dis=state.dbBusy?"disabled":"",evs=state.secEvents.filter(e=>e.connection_id===c.id).slice(0,10);
+  const btn=(k,idle,armed)=>`<button class="act ${conf(k)?"confirm":""}" data-db="${k}" data-id="${c.id}" ${dis}>${conf(k)?armed:idle}</button>`;
+  const copied=state.dbCopied;
+  return `<div data-key="detail-${c.id}">
+  <button type="button" class="link" data-db="back">‹ Connections</button>
+  <header><h2>${esc(c.name)}</h2>${c.suspended_at?`<span class="tag first bad">Suspended</span>`:isExpired(c)?`<span class="tag first bad">Expired</span>`:""}<span class="spacer"></span>
+  ${c.suspended_at?btn("resume","Resume with new password","Click again to resume"):""}
+  <button class="act" data-db="edit" data-id="${c.id}" ${dis}>Edit</button>${c.suspended_at?"":btn("rotate","Rotate password","Click again to rotate")}${btn("del","Delete","Click again to delete")}</header>
+  ${c.suspended_at?`<div class="banner bad" data-key="susp">Suspended ${when(c.suspended_at)}: ${esc(plain(c.suspend_reason))}. Treat this environment as possibly compromised, and check the events below first. Resuming issues a new password, and the old one stays dead.</div>`:""}
+  ${c.suspended_at?"":c.connection_string?`<div class="csbox" data-key="cs"><div class="cslabel"><span>Connection string for the agent</span><span class="spacer"></span>${copied==="ok"?`<span class="copied" role="status">Copied</span>`:""}<button class="act" data-db="copy">Copy</button></div><code class="block sel" id="dbcs" tabindex="0">${esc(c.connection_string)}</code>${copied==="manual"?`<div class="status deny" role="status">The app couldn't reach the clipboard. The string is selected: press Command-C.</div>`:""}</div>`:`<div class="banner" data-key="cs-none">The agent password can't be recovered. Rotate to get a new one.</div>`}
+  <dl class="dl" data-key="facts">
+    <dt>Agent user</dt><dd><code>${esc(c.agent_username)}</code></dd>
+    <dt>Upstream</dt><dd><code>${esc(c.upstream_url)}</code></dd>
+    <dt>Row limit</dt><dd>${esc(limitText(c))}</dd>
+    <dt>Writes</dt><dd>${c.gate_mutations?"Need approval":"Run without approval"}</dd>
+    <dt>Expires</dt><dd>${esc(expiryText(c))}${c.expires_at?` <span class="time">${when(c.expires_at)}</span>`:""}</dd>
+    <dt>Rotation</dt><dd>${esc(rotationText(c))}</dd>
+    <dt>Last rotated</dt><dd>${when(c.rotated_at)}</dd>
+    <dt>Created</dt><dd>${when(c.created_at)}</dd>
+    <dt>Strict rules</dt><dd>${c.strict_all?"On: every table holds PII until marked safe":"Off"}</dd>
+    ${c.strict_all||c.safe_relations?.length?`<dt>Marked safe</dt><dd>${esc((c.safe_relations||[]).join(", "))||"Nothing"}</dd>`:""}
+  </dl>
+  <h3>PII rules</h3>
+  ${c.pii_rules?.length?`<table><thead><tr><th>Column</th><th>Table</th><th>Action</th></tr></thead><tbody>${c.pii_rules.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.table)||`<span class="time">Every table</span>`}</td><td>${esc(r.action)}</td></tr>`).join("")}</tbody></table>`:`<div class="hint">No rules. Edit the connection to add some or to detect likely columns.</div>`}
+  ${evs.length?`<h3 data-key="evh">Recent security events</h3><div data-key="evs">${eventRows(evs)}</div>`:""}
+  </div>`;
+}
+function connList(){
+  if(!state.dbLoaded)return `<div class="empty" data-key="wait">Loading…</div>`;
+  if(!state.conns.length)return `<div class="empty" data-key="none">No database connections yet. Add one to get a connection string you can paste into an agent.</div>`;
+  return `<div class="conns" data-key="conns">${state.conns.map(c=>{const off=c.suspended_at||isExpired(c);return `<button class="conn" data-key="c${c.id}" data-db="open" data-id="${c.id}"><span class="dot ${off?"susp":"on"}"></span><span class="connmain"><span class="connname">${esc(c.name)}${c.suspended_at?`<span class="tag bad">Suspended</span>`:isExpired(c)?`<span class="tag bad">Expired</span>`:""}</span><span class="connup">${esc(c.upstream_url)}</span><span class="connmeta">${esc(limitText(c))} · ${c.gate_mutations?"writes need approval":"writes open"} · ${c.pii_rules?.length||0} PII rule${c.pii_rules?.length===1?"":"s"}</span></span><span class="chev">›</span></button>`}).join("")}</div>`;
+}
+function approvalsTab(){
+  if(!state.pending.length)return `<div class="empty" data-key="none-a">No requests waiting. Writes and large reads that need approval appear here while the agent waits.</div>`;
+  return `<div class="hint" data-key="a-hint">An agent is waiting on each of these. Requests are denied if nobody answers in time.</div>`+state.pending.map(a=>{const b=state.dbBusy==="decide:"+a.id?"disabled":"";return `<div class="card" data-key="a${esc(a.id)}"><div class="cardhead"><b>${esc(a.connection)}</b>${a.database?`<span class="time">${esc(a.database)}</span>`:""}<span class="tag">${esc(reasonText[a.reason]||a.reason)}</span>${a.row_count?`<span class="time">${a.row_count} rows</span>`:""}<span class="spacer"></span><span class="time">Waiting ${waited(a.created_at)}</span></div><code class="block sel">${esc(a.query||a.statement)}</code><div class="time">From ${esc(a.client)}</div><div class="btns"><button class="act primary" data-db="decide" data-ok="1" data-id="${esc(a.id)}" ${b}>Approve</button><button class="act denybtn" data-db="decide" data-ok="0" data-id="${esc(a.id)}" ${b}>Deny</button></div></div>`}).join("");
+}
+function dbScreen(){
+  const n=state.pending.length,t=state.dbTab,v=state.dbView;
+  const tab=(k,l)=>`<button role="tab" data-dbtab="${k}" aria-selected="${t===k}">${l}</button>`;
+  let body;
+  if(t==="approvals")body=`<div data-key="tab-a">${approvalsTab()}</div>`;
+  else if(t==="events")body=`<div data-key="tab-e"><div class="hint">This guards against accidental exposure, not a determined attacker. A blocked statement can be an honest mistake. A suspension means something unusual happened.</div>${state.secEvents.length?eventRows(state.secEvents):state.dbLoaded?`<div class="empty">Nothing yet.</div>`:`<div class="empty">Loading…</div>`}</div>`;
+  else if(state.dbf)body=dbForm();
+  else{const c=v.name==="detail"&&state.conns.find(x=>x.id===v.id);body=c?connDetail(c):connList()}
+  const isList=t==="connections"&&!state.dbf&&v.name==="list";
+  return `<header data-key="dbh"><h1>Databases</h1><span class="spacer"></span>${isList?`<button class="act primary" data-db="add" data-key="addbtn">Add connection</button>`:""}</header>
+  <div class="tabs" role="tablist" data-key="dbtabs">${tab("connections","Connections")}${tab("approvals","Approvals"+(n?` <span class="count">${n}</span>`:""))}${tab("events","Security events")}</div>
+  ${state.dbError?`<div class="banner" data-key="dberr">${esc(state.dbError)}</div>`:""}
+  ${n&&t!=="approvals"?`<div class="banner row-b" data-key="dbappr"><span>${n} database request${n>1?"s are":" is"} waiting for approval.</span><span class="spacer"></span><button class="act" data-db="review">Review</button></div>`:""}
+  ${state.dbNotice?`<div class="banner ${state.dbNotice.bad?"bad":"good"}" data-key="dbnote" role="status">${esc(plain(state.dbNotice.text))}</div>`:""}
+  ${body}`;
+}
+document.addEventListener("input",e=>{
+  const t=e.target,f=state.dbf;if(!f)return;const d=t.dataset;
+  if(d.f){f[d.f]=t.type==="checkbox"?t.checked:t.value;if(t.type==="checkbox")render()}
+  else if(d.r){const r=f.rules.find(x=>x.k===+d.r);if(r)r[d.rf]=t.value}
+  else if(d.s!==undefined){const s=f.sug?.find(x=>x.name===d.s);if(s)s.action=t.value}
+});
+document.addEventListener("submit",e=>{e.preventDefault();dbSave()});
 document.addEventListener("click",e=>{
-  if(e.target.closest("#dbnav")){state.showOther=false;showDB(true);return}
+  if(e.target.closest("#dbnav")){state.showOther=false;if(state.pending.length&&!state.dbf)state.dbTab="approvals";showDB(true);return}
+  const d=e.target.closest("[data-db]");if(d){if(!d.disabled)dbActs[d.dataset.db](d);return}
+  const dt=e.target.closest("[data-dbtab]");if(dt){dbGo(dt.dataset.dbtab);return}
   if(e.target.closest("#othernav")){state.showOther=true;state.db&&showDB(false);render();return}
   const sb=e.target.closest(".sb");if(sb){state.showOther=false;state.db&&showDB(false);state.selected=sb.dataset.name;state.confirming=null;state.egress=[];state.events=[];render();refresh();return}
   const tab=e.target.closest("[data-tab]");if(tab){state.tab=tab.dataset.tab;render();return}
