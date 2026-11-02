@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Colimander</title>
+<style>
+:root{color-scheme:light dark;--bg:#fff;--side:#f4f4f2;--fg:#1d1d1b;--muted:#6f6f6a;--line:#e3e3df;--accent:#2563c9;--warn:#b4530a;--warnbg:#fdf3e7;--bad:#b42318;--ok:#2e7d4f}
+@media(prefers-color-scheme:dark){:root{--bg:#1c1c1e;--side:#252527;--fg:#ececea;--muted:#a0a09a;--line:#38383a;--accent:#7aa7f0;--warn:#f0b070;--warnbg:#3a2c1c;--bad:#f08a80;--ok:#7bc79a}}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{display:flex;background:var(--bg);color:var(--fg);font:13px/1.45 -apple-system,BlinkMacSystemFont,sans-serif}
+aside{width:220px;flex:none;background:var(--side);border-right:1px solid var(--line);padding:38px 8px 8px;overflow:auto;--wails-draggable:drag}
+aside h2{font-size:11px;font-weight:600;color:var(--muted);margin:0 8px 6px}
+.sb{display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;border:0;border-radius:6px;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.sb[aria-current=true]{background:var(--line)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:none}.dot.on{background:var(--ok)}.dot.susp{background:var(--bad)}
+main{flex:1;min-width:0;overflow:auto;padding:24px 28px}
+header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:4px}
+h1{font-size:20px;margin:0}.sub{color:var(--muted);margin-bottom:14px}
+.spacer{flex:1}
+button.act{font:inherit;padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:inherit;cursor:pointer}
+button.act:disabled{opacity:.5;cursor:default}button.act.confirm{border-color:var(--bad);color:var(--bad)}
+.banner{padding:8px 12px;border-radius:6px;background:var(--warnbg);color:var(--warn);margin-bottom:14px}
+.tabs{display:flex;gap:16px;border-bottom:1px solid var(--line);margin:14px 0}
+.tabs button{border:0;background:none;color:var(--muted);font:inherit;padding:6px 0;cursor:pointer;border-bottom:2px solid transparent}
+.tabs button[aria-selected=true]{color:var(--fg);border-color:var(--accent)}
+table{width:100%;border-collapse:collapse}th{font-size:11px;font-weight:600;color:var(--muted);text-align:left;padding:4px 8px}
+td{padding:5px 8px;border-top:1px solid var(--line);overflow-wrap:anywhere}.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}th.num{text-align:right}
+.tag{font-size:11px;padding:0 6px;border-radius:4px;background:var(--warnbg);color:var(--warn);margin-left:6px;white-space:nowrap}
+.empty{color:var(--muted);padding:32px 0}.deny{color:var(--bad)}.time{color:var(--muted);white-space:nowrap}
+</style></head><body>
+<aside><h2>Sandboxes</h2><div id="list"></div></aside>
+<main id="main"></main>
+<script>
+const providers=[["anthropic.com","Anthropic"],["claude.ai","Anthropic"],["openai.com","OpenAI"],["chatgpt.com","OpenAI"],["googleapis.com","Google"],["cursor.sh","Cursor"],["x.ai","xAI"],["openrouter.ai","OpenRouter"],["groq.com","Groq"]];
+let state={sandboxes:[],selected:null,tab:"egress",egress:[],events:[],error:null,busy:null,confirming:null};
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const size=n=>n>=1073741824?(n/1073741824).toFixed(1)+" GB":n>=1048576?(n/1048576).toFixed(1)+" MB":n>=1024?(n/1024).toFixed(1)+" KB":n+" B";
+const when=t=>t?new Date(t).toLocaleString(undefined,{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}):"";
+function provider(dest){const h=dest.split(":")[0];const m=providers.find(([d])=>h===d||h.endsWith("."+d));return m?m[1]:null}
+async function api(path,opts){const r=await fetch("/api"+path,opts);const t=await r.text();if(!r.ok)throw new Error(t.trim()||r.statusText);return t?JSON.parse(t):null}
+async function refresh(){
+  try{
+    state.sandboxes=await api("/sandboxes");
+    if(!state.sandboxes.some(s=>s.name===state.selected))state.selected=state.sandboxes[0]?.name??null;
+    if(state.selected){
+      const q=encodeURIComponent(state.selected);
+      state.egress=await api("/egress?profile="+q);
+      const ev=await api("/events?limit=2000");
+      state.events=ev.filter(e=>e.profile===state.selected&&e.surface!=="EGRESS").slice(-200).reverse();
+    }
+    state.error=null;
+  }catch(e){state.error=e.message}
+  render();
+}
+async function act(path,label){
+  state.busy=label;state.confirming=null;render();
+  try{await api("/sandboxes/"+encodeURIComponent(state.selected)+"/"+path,{method:"POST"});state.error=null}catch(e){state.error=e.message}
+  state.busy=null;await refresh();
+}
+function ask(key,path,label){if(state.confirming===key)return act(path,label);state.confirming=key;render();setTimeout(()=>{if(state.confirming===key){state.confirming=null;render()}},4000)}
+function render(){
+  const list=document.getElementById("list"),main=document.getElementById("main");
+  list.innerHTML=state.sandboxes.map(s=>`<button class="sb" data-name="${esc(s.name)}" aria-current="${s.name===state.selected}"><span class="dot ${s.suspended_reason?"susp":s.status==="Running"?"on":""}"></span>${esc(s.name)}</button>`).join("");
+  const err=state.error?`<div class="banner">${esc(state.error==="daemon not running"?"The Colimander daemon isn't running. Start it with: colimander broker start":state.error)}</div>`:"";
+  const s=state.sandboxes.find(x=>x.name===state.selected);
+  if(!s){main.innerHTML=err+(state.error?"":`<div class="empty">No Colimander sandboxes yet. Create one with: colimander setup</div>`);return}
+  const b=state.busy,dis=b?"disabled":"";
+  const running=s.status==="Running";
+  const sus=s.suspended_reason
+    ?`<button class="act" data-act="resume" data-label="Resuming" ${dis}>Resume with new credentials</button>`
+    :`<button class="act ${state.confirming==="suspend"?"confirm":""}" data-ask="suspend" data-act="suspend" data-label="Suspending" ${dis}>${state.confirming==="suspend"?"Click again to suspend":"Suspend"}</button>`;
+  const eg=s.egress_on
+    ?`<button class="act ${state.confirming==="egoff"?"confirm":""}" data-ask="egoff" data-act="egress/disable" data-label="Turning off monitoring" ${dis||(running?"":"disabled")}>${state.confirming==="egoff"?"Click again to stop":"Stop monitoring"}</button>`
+    :`<button class="act" data-act="egress/enable" data-label="Turning on monitoring" ${dis||(running?"":"disabled")}>Monitor egress</button>`;
+  main.innerHTML=err+`<header><h1>${esc(s.name)}</h1><span class="spacer"></span>${b?`<span class="time">${esc(b)}…</span>`:""}${eg}${sus}</header>
+  <div class="sub">${esc(s.status)} · ${s.cpus} CPU · ${size(s.memory)} memory · Egress monitoring ${s.egress_on?"on":"off"}</div>
+  ${s.suspended_reason?`<div class="banner">Suspended: ${esc(s.suspended_reason)}. The VM keeps running, but it can't use the broker.</div>`:""}
+  <div class="tabs" role="tablist"><button role="tab" data-tab="egress" aria-selected="${state.tab==="egress"}">Egress</button><button role="tab" data-tab="activity" aria-selected="${state.tab==="activity"}">Broker activity</button></div>
+  ${state.tab==="egress"?egress(s):activity()}`;
+}
+function egress(s){
+  if(!state.egress.length)return `<div class="empty">${s.egress_on?"No web traffic recorded yet.":"Turn on egress monitoring to record where this sandbox's web traffic goes. Nothing is blocked."}</div>`;
+  return `<table><thead><tr><th>Destination</th><th class="num">Connections</th><th class="num">Sent</th><th class="num">Received</th><th>Last seen</th></tr></thead><tbody>`+state.egress.map(h=>{const p=provider(h.destination);return `<tr><td>${esc(h.destination)}${p?`<span class="tag">${esc(p)}</span>`:""}${h.errors?`<span class="tag">${h.errors} failed</span>`:""}</td><td class="num">${h.connections}</td><td class="num">${size(h.bytes_out)}</td><td class="num">${size(h.bytes_in)}</td><td class="time">${when(h.last_seen)}</td></tr>`}).join("")+`</tbody></table>`;
+}
+function activity(){
+  if(!state.events.length)return `<div class="empty">No broker activity recorded.</div>`;
+  return `<table><thead><tr><th>Time</th><th>Service</th><th>Request</th><th>Result</th></tr></thead><tbody>`+state.events.map(e=>`<tr><td class="time">${when(e.time)}</td><td>${esc(e.surface)}</td><td>${esc(e.method)} ${esc(e.path)}</td><td class="${e.action==="DENY"?"deny":""}">${esc(e.action)}${e.detail?" · "+esc(e.detail):""}</td></tr>`).join("")+`</tbody></table>`;
+}
+document.addEventListener("click",e=>{
+  const sb=e.target.closest(".sb");if(sb){state.selected=sb.dataset.name;state.confirming=null;state.egress=[];state.events=[];render();refresh();return}
+  const tab=e.target.closest("[data-tab]");if(tab){state.tab=tab.dataset.tab;render();return}
+  const a=e.target.closest("[data-act]");if(!a||a.disabled)return;
+  if(a.dataset.ask)ask(a.dataset.ask,a.dataset.act,a.dataset.label);else act(a.dataset.act,a.dataset.label);
+});
+refresh();setInterval(()=>{if(!state.busy)refresh()},3000);
+</script></body></html>

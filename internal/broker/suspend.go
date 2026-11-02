@@ -87,7 +87,14 @@ func CmdResume(args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: colimander resume <name>")
 	}
-	name := args[0]
+	if err := resumeSandbox(args[0]); err != nil {
+		return err
+	}
+	fmt.Printf("Resumed %q with new credentials.\n", args[0])
+	return nil
+}
+
+func resumeSandbox(name string) error {
 	pol, err := LoadPolicy(name)
 	if err != nil {
 		return fmt.Errorf("load policy for %q: %w", name, err)
@@ -99,9 +106,5 @@ func CmdResume(args []string) error {
 	if err := wireBrokerInVM(name, pol); err != nil {
 		fmt.Fprintf(os.Stderr, "Could not update the VM (%v). It gets the new handle on its next `colimander start`.\n", err)
 	}
-	if err := clearSuspension(name); err != nil {
-		return err
-	}
-	fmt.Printf("Resumed %q with new credentials.\n", name)
-	return nil
+	return clearSuspension(name)
 }

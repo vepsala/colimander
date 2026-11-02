@@ -8,8 +8,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -47,6 +49,32 @@ func (b *broker) controlHandler() http.Handler {
 		}
 		writeJSON(w, summary)
 	})
+	mux.HandleFunc("GET /v1/sandboxes", func(w http.ResponseWriter, r *http.Request) {
+		list, err := listSandboxes()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, list)
+	})
+	action := func(pattern, label string, run func(string) error) {
+		mux.HandleFunc("POST /v1/sandboxes/{name}/"+pattern, func(w http.ResponseWriter, r *http.Request) {
+			name := r.PathValue("name")
+			if err := validProfile(name); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := run(name); err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			b.audit(auditEntry{Profile: name, Surface: "CONTROL", Method: r.Method, Path: pattern, Action: label})
+			writeJSON(w, map[string]string{"name": name})
+		})
+	}
+	action("resume", "RESUME", resumeSandbox)
+	action("egress/enable", "EGRESS-ON", enableEgress)
+	action("egress/disable", "EGRESS-OFF", disableEgress)
 	mux.HandleFunc("GET /v1/sandboxes/{name}", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
 		if err := validProfile(name); err != nil {
@@ -98,6 +126,43 @@ func (b *broker) controlEvents(w http.ResponseWriter, r *http.Request) {
 		entries = []auditEntry{}
 	}
 	writeJSON(w, entries)
+}
+
+// Sandbox is one Colimander-managed VM as the app shows it.
+type Sandbox struct {
+	Name            string `json:"name"`
+	Status          string `json:"status"`
+	CPUs            int    `json:"cpus"`
+	Memory          int64  `json:"memory"`
+	Disk            int64  `json:"disk"`
+	EgressOn        bool   `json:"egress_on"`
+	SuspendedReason string `json:"suspended_reason"`
+}
+
+func listSandboxes() ([]Sandbox, error) {
+	out, err := exec.Command("colima", "list", "--json").Output()
+	if err != nil {
+		return nil, fmt.Errorf("colima list: %w", err)
+	}
+	list := []Sandbox{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var s Sandbox
+		if err := json.Unmarshal([]byte(line), &s); err != nil {
+			return nil, fmt.Errorf("parse colima list: %w", err)
+		}
+		if _, err := os.Stat(filepath.Join(profileDir(s.Name), ".colimander.json")); err != nil {
+			continue // not ours; Colimander leaves other Colima profiles alone
+		}
+		if pol, err := LoadPolicy(s.Name); err == nil {
+			s.EgressOn = pol.EgressPort != 0
+		}
+		s.SuspendedReason = SuspendedReason(s.Name)
+		list = append(list, s)
+	}
+	return list, nil
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
