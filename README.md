@@ -103,7 +103,7 @@ For services that *need* a stable host-side port mapping (e.g., a desktop DB GUI
 - **Credential broker:** proxies GitHub, Fly and Doppler, swapping in real tokens and enforcing policy. VMs identify themselves with a per-profile handle, because every VM's traffic arrives from loopback. Tokens are encrypted in `~/.colimander/vault.db` under a master key file. The key protects stolen backups and disk copies, not against software already running as you.
 - **Egress monitoring:** `colimander egress enable <name>` records a sandbox's web destinations and byte counts. It never decrypts or blocks. See "Egress monitoring limits" below.
 - **Database proxy:** masks PII and gates writes on the way to Postgres, in a separate process. You paste its connection strings where they're needed; nothing injects them. See [docs/database-proxy.md](docs/database-proxy.md).
-- **Mac app:** `cmd/colimander-app` shows sandboxes, egress, broker activity and databases.
+- **Mac app:** `cmd/colimander-app` shows sandboxes, egress, broker activity and databases. Its New sandbox wizard covers the same questions as `colimander setup` and runs in the daemon, so you can close the window while a VM boots. It can't ask for your password, so run `colimander hosts-sync` afterwards for `<name>.local` URLs. Database credentials stay manual copy-paste.
 - **Audit log:** `~/.colimander/audit.log`, moved to `audit.log.1` at 50 MB.
 
 #### Egress monitoring limits

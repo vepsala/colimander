@@ -33,8 +33,11 @@ install step.
   Used only by the external brokers; the GitHub broker still sources from
   `gh auth token`.
 - `gitpkt.go` — minimal git pkt-line parser for ref-deletion detection on push.
-- `packages.go` — optional package catalog (Claude Code, OpenCode, Postgres-16,
-  Node-via-mise) plus the always-on `tmux` baseline.
+- `packages.go` — `colimander packages`. The catalog itself is in `internal/sandbox`.
+- `internal/sandbox/` — creating a sandbox, shared by `colimander setup` and the
+  app: marker, validation, Colima and VM steps, package catalog (Claude Code,
+  OpenCode, Postgres-16, Node-via-mise, always-on `tmux`), and background jobs. It
+  doesn't import the broker; policy and tokens plug in through `Hooks`.
 - `docs/external-brokers.md` — user-facing doc for the fly + doppler surface.
 - `docs/index.html` — standalone GitHub Pages landing page (no build step, no
   framework). Served from the `docs/` folder on `main`; `docs/.nojekyll` keeps
@@ -112,4 +115,5 @@ agent can do with this permission, and is it reversible?"
 - **Suspension:** `colimander suspend <name>` writes `~/.colimander/suspended/<name>`, which the broker checks on every request. The VM keeps running for inspection. `colimander resume <name>` always issues a new handle.
 - **Database proxy:** `internal/pgproxy`, run by the daemon as a child process (`colimander db serve`), so a SQL parsing bug can't reach the broker's credentials. Agents connect on `127.0.0.1:15488` using connection strings the user pastes; nothing wires them into VMs. Its admin UI is on `db-admin.sock`.
 - **Egress:** `internal/egress` plus `colimander egress {enable|disable|status} <name>`. nftables rules in the VM send outbound 443 and 80 to per-sandbox ports on the Mac, where the forwarder reads the TLS server name or HTTP Host and counts bytes. Monitoring only: it doesn't decrypt or apply rules. Ports other than 443 and 80 aren't captured, and HTTPS without a server name fails.
+- **New sandbox:** the app's wizard asks what `colimander setup` asks, and both run `sandbox.Steps`. Add a question or a step in one place, the shared `Request`/`Steps`, then to both front ends. The daemon runs it as a job (`/v1/setup/*` in `internal/broker/setup.go`), one at a time, recorded in `~/.colimander/sandbox-jobs/`, so it survives the window closing, and a daemon restart reports the job as interrupted. Rules to keep: tokens stay in `Secrets`, never in `Spec`, `Job` or a log; retry and clean-up only act on a profile whose marker matches the job's `Spec.CreatedAt`; the daemon never runs sudo, so it tells the user to run `colimander hosts-sync`; nothing injects database credentials into a VM; an absent `deny_rule_ids` means every rule. The egress default is `sandbox.DefaultEgressMonitoring`.
 - **Mac app:** `cmd/colimander-app` (Wails, build tags `desktop,production`), with the interface in `internal/appui`. It only talks to the two Unix sockets. The Databases screens are native and call the proxy's admin API through `/db/api`; `internal/pgproxy/admin/ui.html` only serves standalone `colimander db serve`.

@@ -49,21 +49,39 @@ code.block{display:block;padding:8px 10px;margin:6px 0;border-radius:6px;backgro
 .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .dbform{max-width:640px}.row{display:flex;gap:12px;flex-wrap:wrap}
 .fld{display:block;flex:1 1 150px;min-width:0;margin-top:10px}.fld.wide{flex:2 1 240px}.fld>span{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}
-input[type=text],select{font:inherit;width:100%;min-width:0;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:inherit}
+input[type=text],input[type=password],select{font:inherit;width:100%;min-width:0;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:inherit}
 input[type=text]::placeholder{color:var(--muted);opacity:.8}
 .chk{display:flex;align-items:flex-start;gap:8px;margin-top:10px}.chk input{margin:2px 0 0;flex:none}
 .fldset{margin-top:10px}.fldset .chk{margin-top:4px}
 .rule{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 84px auto;gap:6px;margin-bottom:6px}.rule .from{grid-column:1/-1;margin-top:-2px}
 .sugs{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:10px}.sughead{display:flex;align-items:center;gap:8px}
 .sug{display:grid;grid-template-columns:minmax(0,1fr) 84px auto auto;gap:6px;align-items:center;padding-top:8px;margin-top:8px;border-top:1px solid var(--line)}
+.newsb{color:var(--accent);margin-top:4px}
+.fld.bad input{border-color:var(--bad)}.fielderr{color:var(--bad);margin-top:3px}
+.prog{color:var(--muted);font-size:12px;margin-bottom:4px}
+.wiz{max-width:640px}.wiz h2{margin-bottom:6px}.wiz .btns{margin-top:18px}
+.box{border:1px solid var(--line);border-radius:8px;padding:2px 10px 8px;margin-top:8px}.box.tall{max-height:300px;overflow:auto}
+.box .chk code{display:block}
+.dl.notes{grid-template-columns:minmax(0,200px) minmax(0,1fr)}
+.steps{list-style:none;margin:14px 0;padding:0;max-width:720px}
+.st{display:flex;gap:10px;padding:8px 0;border-top:1px solid var(--line)}.st:first-child{border-top:0}
+.stmain{flex:1;min-width:0}.stpending .stmain>b{color:var(--muted);font-weight:400}.stmain>b{font-weight:500}
+.ico{width:16px;height:16px;flex:none;margin-top:2px;border-radius:50%;border:1.5px solid var(--muted);display:flex;align-items:center;justify-content:center;font-size:11px;line-height:1;font-weight:700}
+.ico.done{border-color:var(--ok);color:var(--ok)}.ico.warning{border-color:var(--warn);color:var(--warn)}.ico.failed{border-color:var(--bad);color:var(--bad)}
+.ico.running{border-color:var(--accent);border-top-color:transparent;animation:spin 1s linear infinite}
+.dot.run{background:var(--accent)}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.ico.running{animation:none;border-top-color:var(--accent)}}
+.stdetail{color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+.steps code.block{margin-top:4px}
 @media(max-width:760px){main{padding:24px 16px}.sug{grid-template-columns:84px auto auto 1fr}.sugname{grid-column:1/-1}}
 </style></head><body>
-<aside><h2>Sandboxes</h2><div id="list"></div><h2 style="margin-top:16px">Tools</h2><button class="sb" id="dbnav">Databases<span id="dbbadge" class="tag" hidden></span></button><button class="sb" id="othernav">Other traffic</button></aside>
+<aside><h2>Sandboxes</h2><div id="list"></div><div id="jobs"></div><button class="sb newsb" id="newsb">+ New sandbox</button><h2 style="margin-top:16px">Tools</h2><button class="sb" id="dbnav">Databases<span id="dbbadge" class="tag" hidden></span></button><button class="sb" id="othernav">Other traffic</button></aside>
 <main id="main"></main>
 <script>
 const providers=[["anthropic.com","Anthropic"],["claude.ai","Anthropic"],["openai.com","OpenAI"],["chatgpt.com","OpenAI"],["googleapis.com","Google"],["cursor.sh","Cursor"],["x.ai","xAI"],["openrouter.ai","OpenRouter"],["groq.com","Groq"]];
 let state={sandboxes:[],selected:null,tab:"egress",egress:[],events:[],error:null,busy:null,confirming:null,
-  pending:[],conns:[],secEvents:[],dbLoaded:false,dbError:null,dbNotice:null,dbBusy:null,dbGen:0,dbTab:"connections",dbView:{name:"list"},dbf:null,dbCopied:null};
+  jobs:[],setupView:null,jobId:null,wf:null,opts:null,optsErr:null,jobNote:null,jobBusy:false,jobsLoaded:false,pending:[],conns:[],secEvents:[],dbLoaded:false,dbError:null,dbNotice:null,dbBusy:null,dbGen:0,dbTab:"connections",dbView:{name:"list"},dbf:null,dbCopied:null};
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const size=n=>n>=1073741824?(n/1073741824).toFixed(1)+" GB":n>=1048576?(n/1048576).toFixed(1)+" MB":n>=1024?(n/1024).toFixed(1)+" KB":n+" B";
 const when=t=>t?new Date(t).toLocaleString(undefined,{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}):"";
@@ -82,6 +100,7 @@ async function refresh(){
     state.other=await api("/other-traffic");
     state.error=null;
   }catch(e){state.error=e.message}
+  await refreshJobs();
   await refreshDB();
   render();
 }
@@ -101,14 +120,17 @@ function showDB(on){
 function render(){
   const list=document.getElementById("list"),main=document.getElementById("main");
   const badge=document.getElementById("dbbadge");badge.hidden=!state.approvals;badge.textContent=state.approvals+" waiting";
-  document.getElementById("othernav").setAttribute("aria-current",!!state.showOther);
-  patch(list,state.sandboxes.map(s=>`<button class="sb" data-key="${esc(s.name)}" data-name="${esc(s.name)}" aria-current="${!state.db&&s.name===state.selected}"><span class="dot ${s.suspended_reason?"susp":s.status==="Running"?"on":""}"></span>${esc(s.name)}</button>`).join(""));
+  document.getElementById("othernav").setAttribute("aria-current",!!state.showOther&&!state.setupView);
+  patch(list,state.sandboxes.map(s=>`<button class="sb" data-key="${esc(s.name)}" data-name="${esc(s.name)}" aria-current="${!state.db&&!state.setupView&&!state.showOther&&s.name===state.selected}"><span class="dot ${s.suspended_reason?"susp":s.status==="Running"?"on":""}"></span>${esc(s.name)}</button>`).join(""));
+  patch(document.getElementById("jobs"),state.jobs.map(j=>`<button class="sb" data-key="j${esc(j.id)}" data-job="${esc(j.id)}" aria-current="${state.setupView==="job"&&state.jobId===j.id}"><span class="dot ${jobDot(j)}"></span>${esc(j.name)}<span class="tag">${esc(jobTag(j))}</span></button>`).join(""));
+  document.getElementById("newsb").setAttribute("aria-current",state.setupView==="form");
+  if(state.setupView){patch(main,setupScreen());fillSecrets();return}
   if(state.db){patch(main,dbScreen());return}
   const err=state.error?`<div class="banner">${esc(state.error==="daemon not running"?"The Colimander daemon isn't running. Start it with: colimander broker start":state.error)}</div>`:"";
   const appr=state.approvals&&!state.db?`<div class="banner">${state.approvals} database request${state.approvals>1?"s are":" is"} waiting for approval. Requests are denied if nobody answers in time. <button class="act" data-db="review">Review</button></div>`:"";
   if(state.showOther){main.innerHTML=err+appr+other();return}
   const s=state.sandboxes.find(x=>x.name===state.selected);
-  if(!s){main.innerHTML=err+appr+(state.error?"":`<div class="empty">No Colimander sandboxes yet. Create one with: colimander setup</div>`);return}
+  if(!s){main.innerHTML=err+appr+(state.error?"":`<div class="empty">No Colimander sandboxes yet. Use New sandbox to create one.</div>`);return}
   const b=state.busy,dis=b?"disabled":"";
   const running=s.status==="Running";
   const sus=s.suspended_reason
@@ -167,7 +189,7 @@ function syncNode(a,b){
   for(const {name} of [...a.attributes])if(!b.hasAttribute(name))a.removeAttribute(name);
   for(const {name,value} of [...b.attributes])if(a.getAttribute(name)!==value)a.setAttribute(name,value);
   syncKids(a,b);
-  if(a.nodeName==="INPUT"){if(a.type==="checkbox")a.checked=b.hasAttribute("checked");else if(a.value!==b.getAttribute("value"))a.value=b.getAttribute("value")??""}
+  if(a.nodeName==="INPUT"){if(a.type==="checkbox")a.checked=b.hasAttribute("checked");else if(a.type!=="password"&&a.value!==b.getAttribute("value"))a.value=b.getAttribute("value")??""}
   if(a.nodeName==="SELECT"&&a.value!==b.value)a.value=b.value;
 }
 // What's stored can carry the proxy's old name in messages written for agents.
@@ -396,14 +418,233 @@ function dbScreen(){
   ${state.dbNotice?`<div class="banner ${state.dbNotice.bad?"bad":"good"}" data-key="dbnote" role="status">${esc(plain(state.dbNotice.text))}</div>`:""}
   ${body}`;
 }
+// New sandbox. The questions and their order follow `colimander setup`; the daemon
+// repeats every check when the job is created. Tokens stay out of the DOM's
+// attributes (fillSecrets sets them as properties) and leave state.wf on sending.
+const jobActive=j=>j&&(j.state==="running"||j.state==="cleaning");
+const jobDot=j=>jobActive(j)?"run":j.state==="failed"?"susp":j.state==="succeeded"?"on":"";
+const jobTag=j=>({running:"Creating",failed:"Failed",cleaning:"Removing",cleaned:"Removed",succeeded:"Ready"}[j.state]||j.state);
+const oldDaemon=m=>/404 page not found/.test(m)?"The running daemon is older than this app, so it can't create sandboxes. Restart it: colimander broker stop, then colimander broker start":m==="daemon not running"?"The Colimander daemon isn't running. Start it with: colimander broker start":m;
+async function refreshJobs(){
+  try{
+    state.jobs=await api("/setup/jobs");
+    // Reopened mid-job: go back to what the person was waiting on.
+    if(!state.jobsLoaded&&!state.setupView){const j=state.jobs.find(x=>x.state!=="cleaned");if(j){state.setupView="job";state.jobId=j.id}}
+    state.jobsLoaded=true;
+    state.jobsErr=null;
+  }catch(e){state.jobsErr=e.message}
+  if(state.setupView==="job"&&state.jobsLoaded&&!state.jobsErr&&!state.jobs.some(j=>j.id===state.jobId))state.setupView=null;
+}
+const wizPages=[["name","Name"],["resources","Resources"],["import","Import"],["packages","Packages"],["github","GitHub"],["services","Fly and Doppler"],["broker","Broker and monitoring"],["review","Review"]];
+const wizFieldPage={name:0,cpu:1,memory:1,disk:1,swap:1,import_path:2,packages:3,orgs:4,deny_rules:4,fly_token:5,fly_apps:5,doppler_token:5,doppler_projects:5,egress:6};
+function openWizard(){
+  state.showOther=false;state.db&&showDB(false);state.setupView="form";state.jobNote=null;
+  if(!state.wf){state.wf={page:0,errs:{},name:"",import:false,import_path:"",packages:[],orgs:[],deny:null,enable_fly:false,fly_token:"",fly_apps:"",enable_doppler:false,doppler_token:"",doppler_projects:""};loadOptions()}
+  else render();
+  document.getElementById("main").scrollTop=0;
+}
+async function loadOptions(){
+  state.opts=null;state.optsErr=null;render();
+  try{
+    const o=await api("/setup/options"),f=state.wf;state.opts=o;
+    if(f&&f.deny===null){const d=o.defaults;Object.assign(f,{cpu:d.cpu,memory:d.memory,disk:d.disk,swap:d.swap,start_broker:d.start_broker,egress:d.egress,deny:o.deny_rules.map(r=>r.id)})}
+  }catch(e){state.optsErr=oldDaemon(e.message)}
+  render();wizFocus();
+}
+function openJob(id){state.showOther=false;state.db&&showDB(false);state.setupView="job";state.jobId=id;state.jobNote=null;document.getElementById("main").scrollTop=0;render()}
+function wizInput(t){
+  const f=state.wf,d=t.dataset;if(!f)return false;
+  if(d.w){f[d.w]=t.type==="checkbox"?t.checked:t.value;delete f.errs[d.w];if(t.type==="checkbox")render();else{const w=t.closest(".fld");w?.classList.remove("bad");w?.querySelector(".fielderr")?.remove()}return true}
+  if(d.wl){const a=f[d.wl];if(t.checked){if(!a.includes(t.value))a.push(t.value)}else f[d.wl]=a.filter(x=>x!==t.value);render();return true}
+  return false;
+}
+function fillSecrets(){const f=state.wf;document.querySelectorAll("#main input[type=password]").forEach(el=>{const v=f?.[el.dataset.w]||"";if(el.value!==v)el.value=v})}
+function wizFocus(){document.querySelector("#main form[data-wiz] input:not([type=checkbox]),#main form[data-wiz] input,#main form[data-wiz] button[type=submit]")?.focus()}
+function wizGo(n){const f=state.wf;f.page=n;f.note=null;document.getElementById("main").scrollTop=0;render();wizFocus()}
+function wizFields(){
+  const f=state.wf;
+  switch(wizPages[f.page][0]){
+    case "name":return {name:f.name};
+    case "resources":return {cpu:f.cpu,memory:f.memory,disk:f.disk,swap:f.swap};
+    case "import":return f.import?{import_path:f.import_path}:{};
+    case "services":return f.enable_doppler?{doppler_projects:f.doppler_projects}:{};
+  }
+  return {};
+}
+// Tokens are only checked for being there, here: they go to the daemon once, on creating.
+function tokenErrs(){const f=state.wf,e={},need="Required.";if(f.enable_fly&&!f.fly_token.trim())e.fly_token=need;if(f.enable_doppler&&!f.doppler_token.trim())e.doppler_token=need;return e}
+const wizActs={
+  async next(){
+    const f=state.wf;if(!f||f.busy)return;
+    if(wizPages[f.page][0]==="review")return wizCreate();
+    const fields=wizFields();f.errs=wizPages[f.page][0]==="services"?tokenErrs():{};
+    if(Object.keys(fields).length){
+      f.busy=true;render();
+      try{Object.assign(f.errs,(await api("/setup/validate",jsonBody("POST",{fields}))).errors)}catch(e){f.note=oldDaemon(e.message);f.busy=false;render();return}
+      f.busy=false;
+    }
+    if(Object.keys(f.errs).length){render();document.querySelector("#main .fld.bad input")?.focus();return}
+    wizGo(f.page+1);
+  },
+  back(){const f=state.wf;f.errs={};wizGo(f.page-1)},
+  cancel(){state.wf=null;state.opts=null;state.setupView=null;render()},
+  recheck(){loadOptions()},
+  denyall(){const f=state.wf;f.deny=state.opts.deny_rules.map(r=>r.id);render()},
+  retry(a){jobDo(a.dataset.id,"retry")},
+  cleanup(a){const id=a.dataset.id;dbConfirm("job:cleanup:"+id,()=>{state.confirming=null;jobDo(id,"cleanup")})},
+  async dismiss(a){await jobDismiss(a.dataset.id);state.setupView=null;render()},
+  async goto(a){const j=state.jobs.find(x=>x.id===a.dataset.id);await jobDismiss(a.dataset.id);state.setupView=null;if(j)state.selected=j.name;await refresh()},
+  async reform(a){await jobDismiss(a.dataset.id);openWizard()},
+};
+async function jobDismiss(id){try{await api(`/setup/jobs/${id}/dismiss`,{method:"POST"});state.jobs=state.jobs.filter(j=>j.id!==id)}catch(e){state.jobNote=oldDaemon(e.message)}}
+async function jobDo(id,action){
+  state.jobBusy=true;state.jobNote=null;render();
+  try{await api(`/setup/jobs/${id}/${action}`,{method:"POST"})}catch(e){state.jobNote=oldDaemon(e.message)}
+  state.jobBusy=false;await refreshJobs();render();
+}
+async function wizCreate(){
+  const f=state.wf,errs=tokenErrs();
+  if(Object.keys(errs).length){f.errs=errs;f.page=wizFieldPage.fly_token;f.note="Enter the token again. Tokens are cleared after each attempt to send them.";render();wizFocus();return}
+  const body={name:f.name,cpu:f.cpu,memory:f.memory,disk:f.disk,swap:f.swap,import:f.import,import_path:f.import?f.import_path:"",packages:f.packages,orgs:f.orgs,deny_rule_ids:f.deny,
+    enable_fly:f.enable_fly,fly_token:f.enable_fly?f.fly_token:"",fly_apps:f.fly_apps,enable_doppler:f.enable_doppler,doppler_token:f.enable_doppler?f.doppler_token:"",doppler_projects:f.doppler_projects,start_broker:f.start_broker,egress:f.egress&&f.start_broker};
+  f.fly_token="";f.doppler_token="";f.busy=true;f.note=null;render();
+  try{
+    const r=await fetch("/api/setup/jobs",jsonBody("POST",body)),t=await r.text();
+    if(r.status===422){
+      const e=JSON.parse(t).errors,keys=Object.keys(e);
+      f.errs=e;f.busy=false;
+      const pg=keys.map(k=>wizFieldPage[k]).filter(x=>x!==undefined);
+      if(pg.length)f.page=Math.min(...pg);
+      if(keys.some(k=>wizFieldPage[k]===undefined))f.note=keys.map(k=>e[k]).join(" ");
+      render();wizFocus();return;
+    }
+    if(!r.ok)throw new Error(t.trim()||r.statusText);
+    const job=JSON.parse(t);
+    state.wf=null;state.opts=null;state.jobs=[job,...state.jobs];state.setupView="job";state.jobId=job.id;document.getElementById("main").scrollTop=0;
+    render();
+  }catch(e){f.busy=false;f.note=oldDaemon(e.message);render()}
+}
+function wfield(key,label,opts={}){
+  const f=state.wf,err=f.errs[key];
+  const val=opts.secret?"":`value="${esc(f[key])}"`,type=opts.secret?`type="password" autocomplete="off"`:inputAttrs;
+  return `<label class="fld ${opts.cls||""} ${err?"bad":""}" data-key="f-${key}"><span>${label}</span><input ${type} data-w="${key}" ${val} placeholder="${esc(opts.ph||"")}" ${err?`aria-invalid="true"`:""}>${err?`<small class="fielderr" role="alert">${esc(err)}</small>`:""}${opts.hint?`<small>${opts.hint}</small>`:""}</label>`;
+}
+const wcheck=(key,text,attrs="",checked=state.wf[key])=>`<label class="chk" data-key="c-${key}"><input type="checkbox" data-w="${key}" ${checked?"checked":""} ${attrs}><span>${text}</span></label>`;
+const wlist=(list,value,inner)=>`<label class="chk" data-key="l-${esc(value)}"><input type="checkbox" data-wl="${list}" value="${esc(value)}" ${state.wf[list].includes(value)?"checked":""}><span>${inner}</span></label>`;
+function wizPage(){
+  const f=state.wf,o=state.opts;
+  switch(wizPages[f.page][0]){
+    case "name":return `<h2>Name your sandbox</h2><div class="hint">Used for the VM, hostname, and editor SSH alias.</div><div class="row">${wfield("name","Project name",{ph:"my-project",hint:"Lowercase letters, digits and hyphens."})}</div>`;
+    case "resources":return `<h2>Resources</h2><div class="row">${wfield("cpu","CPU cores")}${wfield("memory","Memory (GiB)")}</div><div class="row">${wfield("disk","Disk (GiB)")}${wfield("swap","Swap (GiB)",{hint:"0 means none. About half of memory gives headroom."})}</div>`;
+    case "import":return `<h2>Import a directory</h2><div class="hint">A one-time copy when the sandbox is created. After that the VM is the source of truth, and your Mac's copy is no longer touched.</div>${wcheck("import","Import an existing directory into the VM")}${f.import?`<div class="row" data-key="ipath">${wfield("import_path","Path to import",{ph:"~/code/myproject",cls:"wide"})}</div>`:""}`;
+    case "packages":return `<h2>Packages</h2><div class="hint">Installed in the VM after it boots. tmux is always installed. Leave these blank to skip.</div><div class="box" data-key="pk">${o.packages.map(p=>wlist("packages",p.id,`${esc(p.label)}<small>${esc(p.description)}</small>`)).join("")}</div>`;
+    case "github":{
+      const off=o.deny_rules.length-f.deny.length;
+      return `<h2>GitHub access</h2><div class="hint">Your user <code>${esc(o.github.login)}</code> is always allowed. The broker denies traffic to owners not listed here.</div>
+      ${f.errs.orgs?`<div class="banner bad" data-key="eo">${esc(f.errs.orgs)}</div>`:""}
+      ${o.github.orgs.length?`<h3 data-key="oh">Orgs this VM may touch</h3><div class="box" data-key="og">${o.github.orgs.map(x=>wlist("orgs",x,esc(x))).join("")}</div>`:`<div class="hint" data-key="oh">${o.github.orgs_error?"Couldn't list your GitHub orgs, so only your user is allowed. "+esc(o.github.orgs_error):"You aren't in any GitHub orgs."}</div>`}
+      <h3 data-key="dh">Deny rules: destructive operations to block</h3><div class="hint" data-key="dh2">All are on by default. You can change them later in <code>~/.colima/${esc(f.name)}/policy.json</code>.</div>
+      ${off?`<div class="banner row-b" data-key="doff"><span>${off} rule${off>1?"s":""} off. The sandbox could do what ${off>1?"they block":"it blocks"}.</span><span class="spacer"></span><button type="button" class="act" data-wz="denyall">Turn all on</button></div>`:""}
+      <div class="box tall" data-key="dn">${o.deny_rules.map(r=>wlist("deny",r.id,`<code>${esc(r.rule)}</code><small>${esc(r.reason)}</small>`)).join("")}</div>`;
+    }
+    case "services":return `<h2>Fly.io and Doppler</h2><div class="hint">Optional. Tokens go only to the daemon, are stored encrypted in its vault, and the VM never sees them.</div>
+      <h3 data-key="fh">Fly.io</h3>${wcheck("enable_fly","Enable fly.io API brokering. Lets the agent call a small allowlist of fly endpoints (app status, log streaming) through the broker.")}
+      ${f.enable_fly?`<div data-key="ff">${wfield("fly_token","Fly upstream token",{secret:true,hint:"Create a scoped one with <code>fly tokens create deploy -a &lt;app&gt;</code> or <code>fly tokens create org-read-only -o &lt;org&gt;</code>."})}${wfield("fly_apps","Allowed fly app names",{hint:"Separate with commas. Blank allows every app the token can see, and endpoints stay read-only plus logs."})}</div>`:""}
+      <h3 data-key="dh">Doppler</h3>${wcheck("enable_doppler","Enable Doppler secrets brokering. Lets the agent add secrets to listed projects. Reads and deletes are denied by default.")}
+      ${f.enable_doppler?`<div data-key="df">${wfield("doppler_token","Doppler upstream token",{secret:true,hint:"Create a service token at dashboard.doppler.com. Scope it to one project and config for least privilege."})}${wfield("doppler_projects","Allowed Doppler project names",{hint:"Separate with commas. The broker refuses requests for a project outside this list."})}</div>`:""}`;
+    case "broker":return `<h2>Broker and monitoring</h2>
+      ${wcheck("start_broker","Connect this VM to the credential broker now. Required for VM to GitHub traffic. If you skip this, the next <code>colimander start</code> does it.")}
+      ${wcheck("egress",`Monitor egress. Records where web traffic goes: nothing is blocked, but the VM loses web access while the daemon is down.${f.start_broker?"":" Needs the broker."}`,f.start_broker?"":"disabled",f.egress&&f.start_broker)}`;
+    case "review":{
+      const pk=o.packages.filter(p=>f.packages.includes(p.id)).map(p=>p.label),apps=f.fly_apps.split(",").map(x=>x.trim()).filter(Boolean);
+      const busy=state.jobs.some(jobActive);
+      return `<h2>Review</h2><dl class="dl" data-key="rv">
+        <dt>Name</dt><dd>${esc(f.name)}</dd>
+        <dt>Resources</dt><dd>${esc(f.cpu)} CPU, ${esc(f.memory)} GiB memory, ${esc(f.disk)} GiB disk, ${+f.swap>0?esc(f.swap)+" GiB":"no"} swap</dd>
+        <dt>Import</dt><dd>${f.import?`<code>${esc(f.import_path.trim())}</code>`:"Nothing"}</dd>
+        <dt>Packages</dt><dd>${esc(pk.join(", "))||"None"}</dd>
+        <dt>Allowed owners</dt><dd>${esc([o.github.login,...f.orgs].join(", "))}</dd>
+        <dt>Deny rules</dt><dd>${f.deny.length} of ${o.deny_rules.length} enforced</dd>
+        <dt>Fly.io</dt><dd>${f.enable_fly?esc(apps.join(", ")||"All apps"):"Off"}</dd>
+        <dt>Doppler</dt><dd>${f.enable_doppler?esc(f.doppler_projects):"Off"}</dd>
+        <dt>Broker</dt><dd>${f.start_broker?"Connect now":"On next <code>colimander start</code>"}</dd>
+        <dt>Egress</dt><dd>${f.egress&&f.start_broker?"Monitored":"Not monitored"}</dd></dl>
+        <div class="hint" data-key="rvh">This boots a VM, which can take several minutes. You can close the window while it runs.</div>
+        ${busy?`<div class="banner" data-key="rvb">Another sandbox is being created. You can create this one when it's finished.</div>`:""}`;
+    }
+  }
+  return "";
+}
+function setupScreen(){
+  const err=state.error||state.jobsErr;
+  const top=err?`<div class="banner" data-key="serr">${esc(oldDaemon(err))}</div>`:"";
+  if(state.setupView==="job"){const j=state.jobs.find(x=>x.id===state.jobId);return top+(j?jobScreen(j):"")}
+  const f=state.wf,o=state.opts;
+  if(state.optsErr)return top+`<div data-key="wz0"><h1>New sandbox</h1><div class="banner bad" role="alert">${esc(state.optsErr)}</div><div class="btns"><button class="act" data-wz="recheck">Try again</button><button class="act" data-wz="cancel">Cancel</button></div></div>`;
+  if(!o)return top+`<div data-key="wz1"><h1>New sandbox</h1><div class="empty">Checking tools and GitHub…</div></div>`;
+  const missing=o.deps.filter(d=>!d.ok);
+  if(missing.length||o.github.error)return top+`<div data-key="wz2"><h1>New sandbox</h1><div class="sub">These need fixing first. Nothing has been created.</div>
+    <table><thead><tr><th>Needs</th><th>Status</th></tr></thead><tbody>${o.deps.map(d=>`<tr><td>${esc(d.bin)}</td><td class="${d.ok?"":"deny"}">${d.ok?esc(d.version||d.path):"Missing. Install with: "+esc(d.install)}</td></tr>`).join("")}
+    <tr><td>GitHub</td><td class="${o.github.error?"deny":""}">${o.github.error?esc(o.github.error):esc(o.github.login)}</td></tr></tbody></table>
+    <div class="btns"><button class="act primary" data-wz="recheck">Check again</button><button class="act" data-wz="cancel">Cancel</button></div></div>`;
+  const last=f.page===wizPages.length-1,blocked=last&&state.jobs.some(jobActive);
+  return top+`<form class="wiz" data-wiz data-key="wz-${wizPages[f.page][0]}" novalidate>
+    <div class="prog">Step ${f.page+1} of ${wizPages.length}: ${esc(wizPages[f.page][1])}</div>
+    ${wizPage()}
+    ${f.note?`<div class="banner bad" data-key="wn" role="alert">${esc(f.note)}</div>`:""}
+    <div class="btns" data-key="wb"><button type="submit" class="act primary" ${f.busy||blocked?"disabled":""}>${last?(f.busy?"Creating…":"Create sandbox"):"Next"}</button>${f.page?`<button type="button" class="act" data-wz="back" ${f.busy?"disabled":""}>Back</button>`:""}<button type="button" class="act" data-wz="cancel" ${f.busy?"disabled":""}>Cancel</button></div>
+  </form>`;
+}
+const took=(a,b)=>{const s=Math.max(0,Math.round(((b?new Date(b):Date.now())-new Date(a))/1000));return s<60?s+"s":Math.floor(s/60)+"m "+s%60+"s"};
+function jobStep(s){
+  const mark={done:"✓",warning:"!",failed:"×"}[s.state]||"";
+  const word={warning:"Warning: ",failed:""}[s.state]||"";
+  return `<li class="st st${s.state}" data-key="s-${esc(s.id)}"><span class="ico ${s.state}" aria-label="${esc(s.state)}">${mark}</span><div class="stmain"><b>${esc(s.label)}</b>${s.started_at&&s.state!=="pending"?` <span class="time">${took(s.started_at,s.finished_at)}</span>`:""}
+    ${s.detail?`<div class="stdetail" data-key="d">${esc(s.detail)}</div>`:""}
+    ${s.error?`<div class="${s.state==="failed"?"deny":"stdetail"}" data-key="e">${word}${esc(s.error)}</div>`:""}
+    ${s.output?`<code class="block sel" data-key="o">${esc(s.output)}</code>`:""}</div></li>`;
+}
+function jobScreen(j){
+  const dis=state.jobBusy?"disabled":"",n=esc(j.name),arm=state.confirming==="job:cleanup:"+j.id;
+  const warns=j.steps.filter(s=>s.state==="warning").length;
+  const title={running:`Creating ${n}`,succeeded:`${n} is ready`,failed:`Couldn't finish creating ${n}`,cleaning:`Removing ${n}`,cleaned:`Removed ${n}`}[j.state]||n;
+  let note="",btns="";
+  if(j.state==="running")note=`<div class="hint" data-key="jn">You can close this window. The daemon carries on, and this screen picks up where it's got to when you come back.</div>`;
+  if(j.state==="cleaning")note=`<div class="hint" data-key="jn">Deleting the VM and its settings.</div>`;
+  if(j.state==="failed"){
+    const where=j.failed_step?`Stopped at: ${esc(j.failed_step)}. `:"";
+    const what=j.can_cleanup?`The unfinished sandbox is still on this Mac${j.can_retry?"":", and can't be resumed"}. ${j.can_retry?"Retry carries on from this step. ":""}Clean up deletes its VM, settings and stored tokens.`:`Nothing is left on this Mac from this attempt.`;
+    note=`<div class="banner bad" data-key="jn" role="alert">${where}${j.interrupted?esc(j.error)+" ":""}${what}</div>${j.cleanup_error?`<div class="banner bad" data-key="jce" role="alert">Clean-up failed, so the sandbox is still there: ${esc(j.cleanup_error)}</div>`:""}`;
+    btns=j.can_cleanup
+      ?`${j.can_retry?`<button class="act primary" data-wz="retry" data-id="${esc(j.id)}" ${dis}>Retry</button>`:""}<button class="act ${arm?"confirm":""}" data-wz="cleanup" data-id="${esc(j.id)}" ${dis}>${arm?"Click again to delete it":"Clean up"}</button><button class="act" data-wz="dismiss" data-id="${esc(j.id)}" ${dis}>Keep it and close</button>`
+      :`<button class="act primary" data-wz="reform" data-id="${esc(j.id)}" ${dis}>Back to the form</button><button class="act" data-wz="dismiss" data-id="${esc(j.id)}" ${dis}>Close</button>`;
+    if(j.can_cleanup)note+=`<div class="hint" data-key="jk">If you keep it, remove it later with <code>colimander destroy ${n} --yes</code>.</div>`;
+  }
+  if(j.state==="succeeded"){
+    note=`<div class="banner ${warns?"":"good"}" data-key="jn" role="status">${warns?`The sandbox works, but ${warns} step${warns>1?"s":""} had a problem. Details are below.`:"The sandbox is running."}</div>`;
+    btns=`<button class="act primary" data-wz="goto" data-id="${esc(j.id)}" ${dis}>Open sandbox</button>`;
+  }
+  if(j.state==="cleaned"){note=`<div class="banner good" data-key="jn" role="status">The VM, its settings and its stored tokens are gone.</div>`;btns=`<button class="act" data-wz="dismiss" data-id="${esc(j.id)}" ${dis}>Close</button>`}
+  const done=j.state==="succeeded"?`<h3 data-key="nh">One more step for ${n}.local</h3><div class="hint" data-key="hh">The app can't ask for your password, so <code>/etc/hosts</code> hasn't been updated. For browser URLs to work, run this in Terminal:</div><code class="block sel" data-key="hc">${esc(j.hosts_command)}</code>
+    <h3 data-key="nh2">Next steps</h3><dl class="dl notes" data-key="nx">${(j.notes||[]).map(x=>`<dt>${esc(x.label)}</dt><dd><code class="sel">${esc(x.value)}</code></dd>`).join("")}</dl>
+    <div class="hint" data-key="dbh">Database access stays manual: add a connection under Databases and paste its string where you need it.</div>`:"";
+  return `<div data-key="job-${esc(j.id)}"><header data-key="jh"><h1>${title}</h1></header>${note}${state.jobNote?`<div class="banner bad" data-key="jx" role="alert">${esc(state.jobNote)}</div>`:""}
+    <ol class="steps" data-key="st">${j.state==="cleaned"?"":j.steps.map(jobStep).join("")}</ol>${done}
+    ${btns?`<div class="btns" data-key="jb">${btns}</div>`:""}</div>`;
+}
 document.addEventListener("input",e=>{
+  if(wizInput(e.target))return;
   const t=e.target,f=state.dbf;if(!f)return;const d=t.dataset;
   if(d.f){f[d.f]=t.type==="checkbox"?t.checked:t.value;if(t.type==="checkbox")render()}
   else if(d.r){const r=f.rules.find(x=>x.k===+d.r);if(r)r[d.rf]=t.value}
   else if(d.s!==undefined){const s=f.sug?.find(x=>x.name===d.s);if(s)s.action=t.value}
 });
-document.addEventListener("submit",e=>{e.preventDefault();dbSave()});
+document.addEventListener("submit",e=>{e.preventDefault();if(e.target.dataset.wiz!==undefined)wizActs.next();else dbSave()});
 document.addEventListener("click",e=>{
+  if(e.target.closest(".sb")){state.setupView=null;state.confirming=null}
+  if(e.target.closest("#newsb")){openWizard();return}
+  const jb=e.target.closest("[data-job]");if(jb){openJob(jb.dataset.job);return}
+  const wz=e.target.closest("[data-wz]");if(wz){if(!wz.disabled)wizActs[wz.dataset.wz](wz);return}
   if(e.target.closest("#dbnav")){state.showOther=false;if(state.pending.length&&!state.dbf)state.dbTab="approvals";showDB(true);return}
   const d=e.target.closest("[data-db]");if(d){if(!d.disabled)dbActs[d.dataset.db](d);return}
   const dt=e.target.closest("[data-dbtab]");if(dt){dbGo(dt.dataset.dbtab);return}
@@ -414,4 +655,5 @@ document.addEventListener("click",e=>{
   if(a.dataset.ask)ask(a.dataset.ask,a.dataset.act,a.dataset.label);else act(a.dataset.act,a.dataset.label);
 });
 refresh();setInterval(()=>{if(!state.busy)refresh()},3000);
+setInterval(()=>{if(state.setupView==="job"&&jobActive(state.jobs.find(j=>j.id===state.jobId)))refreshJobs().then(render)},1000);
 </script></body></html>

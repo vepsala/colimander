@@ -213,10 +213,23 @@ func nextEgressPort() int {
 		}
 	}
 	port := firstEgressPort
-	for used[port] {
+	for used[port] || !portsFree(port, port+1) {
 		port += 2
 	}
 	return port
+}
+
+// portsFree matters because enableEgress only checks that something is listening:
+// if another process held the port, the VM's web traffic would go to it.
+func portsFree(ports ...int) bool {
+	for _, p := range ports {
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+		if err != nil {
+			return false
+		}
+		ln.Close()
+	}
+	return true
 }
 
 const (

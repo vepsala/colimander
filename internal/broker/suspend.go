@@ -103,7 +103,7 @@ func resumeSandbox(name string) error {
 	if err := SavePolicy(name, pol); err != nil {
 		return err
 	}
-	if err := wireBrokerInVM(name, pol); err != nil {
+	if err := wireBrokerInVM(name, pol, os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "Could not update the VM (%v). It gets the new handle on its next `colimander start`.\n", err)
 	}
 	return clearSuspension(name)

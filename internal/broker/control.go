@@ -104,6 +104,7 @@ func (b *broker) controlHandler() http.Handler {
 		b.audit(auditEntry{Profile: name, Surface: "CONTROL", Method: r.Method, Path: "suspend", Action: "SUSPEND", Detail: body.Reason})
 		writeJSON(w, map[string]any{"name": name, "suspended_reason": SuspendedReason(name)})
 	})
+	b.setupRoutes(mux)
 	return mux
 }
 

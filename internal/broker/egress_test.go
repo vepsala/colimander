@@ -1,6 +1,8 @@
 package broker
 
 import (
+	"fmt"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -47,7 +49,8 @@ func TestDaemonFollowsPolicyForListeners(t *testing.T) {
 	if err := waitForPort(18991, 2*time.Second); err != nil {
 		t.Fatalf("HTTP listener: %v", err)
 	}
-	if got := nextEgressPort(); got != firstEgressPort {
+	// Lower ports may be taken by whatever else is on this machine.
+	if got := nextEgressPort(); got < firstEgressPort || got >= 18990 {
 		t.Errorf("next port = %d", got)
 	}
 }
@@ -109,5 +112,18 @@ func TestParseOtherTraffic(t *testing.T) {
 	got := parseLsofRemotes(in)
 	if len(got) != 3 || got[0] != "1.1.1.1:443" || got[1] != "140.82.1.1:22" || got[2] != "[2606:4700::1]:443" {
 		t.Errorf("remotes = %v", got)
+	}
+}
+
+func TestNextEgressPortSkipsPortsInUse(t *testing.T) {
+	shortHome(t)
+	first := nextEgressPort()
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", first+1))
+	if err != nil {
+		t.Skip(err)
+	}
+	defer ln.Close()
+	if got := nextEgressPort(); got == first || got == first+1 {
+		t.Errorf("got %d, but %d is taken", got, first+1)
 	}
 }

@@ -40,6 +40,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/vepsala/colimander/internal/sandbox"
 )
 
 // Version is reported in the broker's User-Agent.
@@ -66,6 +68,9 @@ type broker struct {
 
 	summaries egressTotals
 	other     otherTraffic
+
+	jobsOnce sync.Once
+	jobsMgr  *sandbox.Jobs
 }
 
 func stateDir() string {
@@ -433,7 +438,7 @@ func brokerRewire(args []string) error {
 	if err := SavePolicy(name, pol); err != nil {
 		return err
 	}
-	if err := wireBrokerInVM(name, pol); err != nil {
+	if err := wireBrokerInVM(name, pol, os.Stdout, os.Stderr); err != nil {
 		return err
 	}
 	fmt.Printf("Rewired %q. New handle is in %s.\n", name, PolicyPath(name))

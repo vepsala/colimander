@@ -13,13 +13,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -27,69 +24,19 @@ import (
 
 	"github.com/vepsala/colimander/internal/broker"
 	dbcli "github.com/vepsala/colimander/internal/pgproxy/cli"
+	"github.com/vepsala/colimander/internal/sandbox"
 )
 
-const (
-	version    = "0.1.0-dev"
-	markerName = ".colimander.json"
-)
+const version = "0.1.0-dev"
 
-type marker struct {
-	Name              string    `json:"name"`
-	CreatedAt         time.Time `json:"created_at"`
-	ColimanderVersion string    `json:"colimander_version"`
-	CPU               int       `json:"cpu"`
-	Memory            int       `json:"memory"`
-	Disk              int       `json:"disk"`
-	// SwapGiB controls a /swapfile created inside the VM at start time.
-	// 0 = no swap. Idempotent — applied on every `start` if non-zero.
-	SwapGiB int `json:"swap_gib,omitempty"`
-	// ImportedFrom records what was loaded into the VM at create time. Either a
-	// host path (mode "dir") or a git URL (mode "repo"). For audit only.
-	ImportedFrom string `json:"imported_from,omitempty"`
-	ImportMode   string `json:"import_mode,omitempty"`
-}
-
-func colimaProfileDir(name string) string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".colima", name)
-}
-
-func markerPath(name string) string {
-	return filepath.Join(colimaProfileDir(name), markerName)
-}
-
-func loadMarker(name string) (*marker, error) {
-	data, err := os.ReadFile(markerPath(name))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var m marker
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("invalid marker at %s: %w", markerPath(name), err)
-	}
-	return &m, nil
-}
-
-func writeMarker(m *marker) error {
-	if err := os.MkdirAll(colimaProfileDir(m.Name), 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(markerPath(m.Name), data, 0o644)
-}
+// terminal is what commands the CLI runs read from and write to.
+var terminal = sandbox.IO{In: os.Stdin, Out: os.Stdout, Err: os.Stderr}
 
 // requireManaged loads the marker and returns it. If the profile has no
 // marker, it refuses unless forceUnmanaged is set, in which case it returns
 // (nil, nil) and the caller falls back to a plain colima invocation.
-func requireManaged(name string, forceUnmanaged bool) (*marker, error) {
-	m, err := loadMarker(name)
+func requireManaged(name string, forceUnmanaged bool) (*sandbox.Marker, error) {
+	m, err := sandbox.LoadMarker(name)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +45,7 @@ func requireManaged(name string, forceUnmanaged bool) (*marker, error) {
 			fmt.Fprintf(os.Stderr, "warning: profile %q is not Colimander-managed; --force-unmanaged was passed.\n", name)
 			return nil, nil
 		}
-		return nil, fmt.Errorf("profile %q is not managed by Colimander (no marker at %s). Refusing. Pass --force-unmanaged to override", name, markerPath(name))
+		return nil, fmt.Errorf("profile %q is not managed by Colimander (no marker at %s). Refusing. Pass --force-unmanaged to override", name, sandbox.MarkerPath(name))
 	}
 	return m, nil
 }
@@ -174,7 +121,7 @@ func listManagedNames() ([]string, error) {
 		if !d.IsDir() {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(colimaDir, d.Name(), markerName)); err == nil {
+		if _, err := os.Stat(filepath.Join(colimaDir, d.Name(), sandbox.MarkerName)); err == nil {
 			names = append(names, d.Name())
 		}
 	}
@@ -239,7 +186,7 @@ func cmdLs(args []string) error {
 			return
 		}
 		// No colima entry — managed-but-never-started. Pull resources from marker.
-		m, _ := loadMarker(name)
+		m, _ := sandbox.LoadMarker(name)
 		cpu, mem, disk := "-", "-", "-"
 		if m != nil {
 			cpu = fmt.Sprintf("%d", m.CPU)
@@ -288,6 +235,12 @@ func cmdCreate(args []string) error {
 		return errors.New("usage: colimander create <name> [--cpu N] [--memory G] [--disk G] [--start]")
 	}
 	name := args[0]
+	if err := sandbox.ValidateProfileName(name); err != nil {
+		return err
+	}
+	if err := sandbox.EnsureNameAvailable(name); err != nil {
+		return err
+	}
 	fs := flag.NewFlagSet("create", flag.ExitOnError)
 	cpu := fs.Int("cpu", 2, "vCPU count")
 	memory := fs.Int("memory", 4, "memory in GiB")
@@ -304,18 +257,18 @@ func cmdCreate(args []string) error {
 		*start = true
 	}
 
-	existing, err := loadMarker(name)
+	existing, err := sandbox.LoadMarker(name)
 	if err != nil {
 		return err
 	}
 	if existing != nil {
-		return fmt.Errorf("profile %q already exists (marker at %s)", name, markerPath(name))
+		return fmt.Errorf("profile %q already exists (marker at %s)", name, sandbox.MarkerPath(name))
 	}
-	if _, err := os.Stat(colimaProfileDir(name)); err == nil {
-		return fmt.Errorf("Colima profile directory %s exists but has no Colimander marker. Refusing to overwrite", colimaProfileDir(name))
+	if _, err := os.Stat(sandbox.ProfileDir(name)); err == nil {
+		return fmt.Errorf("Colima profile directory %s exists but has no Colimander marker. Refusing to overwrite", sandbox.ProfileDir(name))
 	}
 
-	m := &marker{
+	m := &sandbox.Marker{
 		Name:              name,
 		CreatedAt:         time.Now().UTC(),
 		ColimanderVersion: version,
@@ -331,15 +284,15 @@ func cmdCreate(args []string) error {
 		m.ImportedFrom = abs
 		m.ImportMode = "dir"
 	}
-	if err := writeMarker(m); err != nil {
+	if err := sandbox.WriteMarker(m); err != nil {
 		return fmt.Errorf("write marker: %w", err)
 	}
-	if err := writeColimaConfig(m); err != nil {
+	if err := sandbox.WriteColimaConfig(m); err != nil {
 		return fmt.Errorf("write colima.yaml: %w", err)
 	}
 	fmt.Printf("Created Colimander profile %q.\n", name)
 	fmt.Printf("  CPU: %d   Memory: %d GiB   Disk: %d GiB\n", *cpu, *memory, *disk)
-	fmt.Printf("  Marker: %s\n", markerPath(name))
+	fmt.Printf("  Marker: %s\n", sandbox.MarkerPath(name))
 	if !*start {
 		fmt.Printf("\nTo start: colimander start %s\n", name)
 		return nil
@@ -348,63 +301,15 @@ func cmdCreate(args []string) error {
 		return err
 	}
 	if *importDir != "" {
-		if err := importDirIntoVM(name, *importDir); err != nil {
+		if err := sandbox.ImportDir(name, *importDir, terminal); err != nil {
 			return fmt.Errorf("import-dir: %w", err)
 		}
 	}
 	return nil
 }
 
-// emptyMountPath returns a per-profile throwaway directory that we mount
-// read-only into the VM. This is the trick that suppresses Colima's default
-// $HOME + /tmp/colima-<profile> mounts: when --mount is passed explicitly,
-// Colima only includes what we specify (plus its own image cache, which is
-// always read-only and benign).
-func emptyMountPath(name string) string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".colimander", "empty", name)
-}
-
-func ensureEmptyMount(name string) (string, error) {
-	p := emptyMountPath(name)
-	if err := os.MkdirAll(p, 0o755); err != nil {
-		return "", err
-	}
-	return p, nil
-}
-
-func renderColimaConfig(m *marker) string {
-	return fmt.Sprintf(`# Generated by colimander v%s for profile %q.
-# colimander start regenerates this from the marker — edits will be overwritten.
-cpu: %d
-memory: %d
-disk: %d
-runtime: docker
-vmType: vz
-mountType: virtiofs
-network:
-  address: true
-`, m.ColimanderVersion, m.Name, m.CPU, m.Memory, m.Disk)
-}
-
-func writeColimaConfig(m *marker) error {
-	path := filepath.Join(colimaProfileDir(m.Name), "colima.yaml")
-	return os.WriteFile(path, []byte(renderColimaConfig(m)), 0o644)
-}
-
-func startProfile(m *marker) error {
-	if err := writeColimaConfig(m); err != nil {
-		return fmt.Errorf("write colima.yaml: %w", err)
-	}
-	emptyMnt, err := ensureEmptyMount(m.Name)
-	if err != nil {
-		return fmt.Errorf("create empty mount stub: %w", err)
-	}
-	fmt.Printf("Starting %q (no host home mount; %d CPU / %d GiB RAM / %d GiB disk)\n",
-		m.Name, m.CPU, m.Memory, m.Disk)
-	// The --mount with our empty dir is the trick that suppresses Colima's
-	// $HOME and /tmp/colima-<profile> defaults at the lima.yaml layer.
-	if err := runColima("start", m.Name, "--mount", emptyMnt+":r"); err != nil {
+func startProfile(m *sandbox.Marker) error {
+	if err := sandbox.BootVM(m, terminal); err != nil {
 		return err
 	}
 	if err := syncEtcHosts(); err != nil {
@@ -412,35 +317,11 @@ func startProfile(m *marker) error {
 		fmt.Fprintf(os.Stderr, "  retry manually with: colimander hosts-sync\n")
 	}
 	if m.SwapGiB > 0 {
-		if err := ensureSwap(m.Name, m.SwapGiB); err != nil {
+		if err := sandbox.EnsureSwap(m.Name, m.SwapGiB, terminal); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: swap setup failed: %v\n", err)
 		}
 	}
 	return nil
-}
-
-// ensureSwap idempotently creates and activates a /swapfile of the requested
-// size inside the VM and persists it in /etc/fstab. Safe to call on every
-// start — if a /swapfile is already active at the right size, this is a no-op.
-func ensureSwap(profile string, gib int) error {
-	script := fmt.Sprintf(`set -e
-DESIRED_BYTES=$(( %d * 1024 * 1024 * 1024 ))
-if swapon --show=NAME,SIZE --bytes --noheadings 2>/dev/null | awk '$1=="/swapfile"{print $2}' | grep -qx "$DESIRED_BYTES"; then
-  exit 0
-fi
-sudo swapoff /swapfile 2>/dev/null || true
-sudo rm -f /swapfile
-sudo fallocate -l %dG /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile > /dev/null
-sudo swapon /swapfile
-grep -q "^/swapfile " /etc/fstab || echo "/swapfile none swap sw 0 0" | sudo tee -a /etc/fstab > /dev/null
-`, gib, gib)
-	cmd := exec.Command("colima", "ssh", "-p", profile, "--", "bash", "-s")
-	cmd.Stdin = strings.NewReader(script)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }
 
 func cmdStart(args []string) error {
@@ -516,11 +397,11 @@ func cmdDestroy(args []string) error {
 	// Best-effort: colima delete handles the VM + most files. Then ensure the
 	// directory is gone in case the VM was never started.
 	_ = runColima("delete", "-f", name)
-	if err := os.RemoveAll(colimaProfileDir(name)); err != nil {
-		return fmt.Errorf("cleanup %s: %w", colimaProfileDir(name), err)
+	if err := os.RemoveAll(sandbox.ProfileDir(name)); err != nil {
+		return fmt.Errorf("cleanup %s: %w", sandbox.ProfileDir(name), err)
 	}
 	// Also remove the per-profile empty-mount stub dir, if any.
-	_ = os.RemoveAll(emptyMountPath(name))
+	_ = os.RemoveAll(sandbox.EmptyMountPath(name))
 	if err := syncEtcHosts(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to update /etc/hosts: %v\n", err)
 	}
@@ -533,7 +414,7 @@ func cmdStatus(args []string) error {
 		return errors.New("usage: colimander status <name>")
 	}
 	name := args[0]
-	m, err := loadMarker(name)
+	m, err := sandbox.LoadMarker(name)
 	if err != nil {
 		return err
 	}
@@ -555,7 +436,7 @@ func cmdStatus(args []string) error {
 	if m != nil {
 		fmt.Printf("Managed:  yes (created %s, colimander v%s)\n",
 			m.CreatedAt.Local().Format("2006-01-02 15:04:05"), m.ColimanderVersion)
-		fmt.Printf("Marker:   %s\n", markerPath(name))
+		fmt.Printf("Marker:   %s\n", sandbox.MarkerPath(name))
 		fmt.Printf("Stored:   %d CPU, %d GiB memory, %d GiB disk\n", m.CPU, m.Memory, m.Disk)
 	} else {
 		fmt.Printf("Managed:  no\n")
@@ -596,92 +477,6 @@ func cmdSSH(args []string) error {
 	return runColima(colimaArgs...)
 }
 
-// vmUserName returns the in-VM user Colima provisions by default: <host-user>.linux.
-func vmUserName() (string, error) {
-	u, err := user.Current()
-	if err != nil {
-		return "", err
-	}
-	return u.Username + ".linux", nil
-}
-
-// limaInstanceName returns the lima instance name that backs a colima profile.
-// Colima names the "default" profile's instance just "colima"; all others get
-// the "colima-" prefix.
-func limaInstanceName(profile string) string {
-	if profile == "default" {
-		return "colima"
-	}
-	return "colima-" + profile
-}
-
-func expandHome(p string) string {
-	if !strings.HasPrefix(p, "~") {
-		return p
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return p
-	}
-	return filepath.Join(home, strings.TrimPrefix(p, "~"))
-}
-
-// ------------------------------ setup wizard --------------------------------
-
-type depSpec struct {
-	bin         string
-	versionFlag string
-	install     string
-}
-
-var requiredDeps = []depSpec{
-	{"colima", "version", "brew install colima"},
-	{"limactl", "--version", "brew install lima"},
-	{"docker", "--version", "comes with colima; if missing, brew install docker"},
-	{"git", "--version", "preinstalled on macOS; otherwise brew install git"},
-}
-
-func checkDeps() error {
-	fmt.Println("Checking dependencies:")
-	missing := 0
-	for _, d := range requiredDeps {
-		path, err := exec.LookPath(d.bin)
-		if err != nil {
-			fmt.Printf("  %-10s missing  —  install with: %s\n", d.bin, d.install)
-			missing++
-			continue
-		}
-		ver := ""
-		if out, err := exec.Command(path, d.versionFlag).Output(); err == nil {
-			ver = strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
-		}
-		fmt.Printf("  %-10s %s  (%s)\n", d.bin, path, ver)
-	}
-	if missing > 0 {
-		return fmt.Errorf("%d dependency missing; install and re-run `colimander setup`", missing)
-	}
-	return nil
-}
-
-var profileNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,30}$`)
-
-func validateProfileName(name string) error {
-	if !profileNameRE.MatchString(name) {
-		return fmt.Errorf("name must start with a letter/digit and be 1-31 lowercase chars, digits, or hyphens")
-	}
-	return nil
-}
-
-func ensureNameAvailable(name string) error {
-	if m, _ := loadMarker(name); m != nil {
-		return fmt.Errorf("profile %q already exists (marker at %s)", name, markerPath(name))
-	}
-	if _, err := os.Stat(colimaProfileDir(name)); err == nil {
-		return fmt.Errorf("colima profile dir %q exists; pick another name", colimaProfileDir(name))
-	}
-	return nil
-}
-
 func cmdSetup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
 	if err := fs.Parse(args); err != nil {
@@ -700,34 +495,20 @@ func cmdSetup(args []string) error {
 	}
 	fmt.Println()
 
-	ghUser, err := ghCurrentLogin()
+	ghUser, err := sandbox.GHCurrentLogin()
 	if err != nil {
 		return err
 	}
-	orgs, _ := ghOrgs()
+	orgs, _ := sandbox.GHOrgs()
 
 	// Form state — all populated by huh.NewForm below.
-	var name string
-	cpuStr := "2"
-	memStr := "4"
-	diskStr := "20"
-	swapStr := "4"
-	doImport := false
-	importPath := ""
-	var pickedPkgIDs []string
-	var pickedOrgs []string
-	startBroker := true
+	req := sandbox.Request{
+		CPU: sandbox.Defaults.CPU, Memory: sandbox.Defaults.Memory, Disk: sandbox.Defaults.Disk, Swap: sandbox.Defaults.Swap,
+		StartBroker: sandbox.Defaults.StartBroker, Egress: sandbox.Defaults.Egress,
+	}
 
-	// Optional external-service broker config.
-	enableFly := false
-	flyToken := ""
-	flyAppsCSV := ""
-	enableDoppler := false
-	dopplerToken := ""
-	dopplerProjectsCSV := ""
-
-	pkgOpts := make([]huh.Option[string], 0, len(availablePackages))
-	for _, p := range availablePackages {
+	pkgOpts := make([]huh.Option[string], 0, len(sandbox.Packages))
+	for _, p := range sandbox.Packages {
 		pkgOpts = append(pkgOpts, huh.NewOption(fmt.Sprintf("%s — %s", p.Label, p.Description), p.ID))
 	}
 	orgOpts := make([]huh.Option[string], 0, len(orgs))
@@ -737,12 +518,12 @@ func cmdSetup(args []string) error {
 	allRules := broker.DefaultDenyRules()
 	denyOpts := make([]huh.Option[string], 0, len(allRules))
 	for _, r := range allRules {
-		denyOpts = append(denyOpts, huh.NewOption(denyRuleLabel(r), r.ID))
+		denyOpts = append(denyOpts, huh.NewOption(broker.DenyRuleLabel(r), r.ID))
 	}
 	// Pre-select all rules so the default behavior is "enforce everything".
-	pickedDenyIDs := make([]string, 0, len(allRules))
+	req.DenyRuleIDs = make([]string, 0, len(allRules))
 	for _, r := range allRules {
-		pickedDenyIDs = append(pickedDenyIDs, r.ID)
+		req.DenyRuleIDs = append(req.DenyRuleIDs, r.ID)
 	}
 
 	form := huh.NewForm(
@@ -750,19 +531,14 @@ func cmdSetup(args []string) error {
 			huh.NewInput().
 				Title("Project name").
 				Description("Used for the VM, hostname, and editor SSH alias.").
-				Value(&name).
-				Validate(func(v string) error {
-					if err := validateProfileName(v); err != nil {
-						return err
-					}
-					return ensureNameAvailable(v)
-				}),
+				Value(&req.Name).
+				Validate(sandbox.ValidateName),
 		),
 		huh.NewGroup(
-			huh.NewInput().Title("CPU cores").Value(&cpuStr).Validate(validatePositiveInt),
-			huh.NewInput().Title("Memory (GiB)").Value(&memStr).Validate(validatePositiveInt),
-			huh.NewInput().Title("Disk (GiB)").Value(&diskStr).Validate(validatePositiveInt),
-			huh.NewInput().Title("Swap (GiB)").Description("0 = none. Recommended ~half of memory for headroom.").Value(&swapStr).Validate(validateNonNegativeInt),
+			huh.NewInput().Title("CPU cores").Value(&req.CPU).Validate(sandbox.ValidatePositiveInt),
+			huh.NewInput().Title("Memory (GiB)").Value(&req.Memory).Validate(sandbox.ValidatePositiveInt),
+			huh.NewInput().Title("Disk (GiB)").Value(&req.Disk).Validate(sandbox.ValidatePositiveInt),
+			huh.NewInput().Title("Swap (GiB)").Description("0 = none. Recommended ~half of memory for headroom.").Value(&req.Swap).Validate(sandbox.ValidateNonNegativeInt),
 		),
 		huh.NewGroup(
 			huh.NewConfirm().
@@ -770,35 +546,35 @@ func cmdSetup(args []string) error {
 				Description("One-shot copy at create time. After this, the VM is the source of truth — host copy is no longer touched.").
 				Affirmative("Yes, import a dir").
 				Negative("No, start fresh").
-				Value(&doImport),
+				Value(&req.Import),
 		),
 		huh.NewGroup(
 			huh.NewInput().
 				Title("Path to import").
 				Description("e.g. ~/code/myproject").
-				Value(&importPath).
-				Validate(validateImportPath),
-		).WithHideFunc(func() bool { return !doImport }),
+				Value(&req.ImportPath).
+				Validate(sandbox.ValidateImportPath),
+		).WithHideFunc(func() bool { return !req.Import }),
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().
 				Title("Packages to install in the VM").
 				Description("space toggles, enter confirms; leave blank to skip.").
 				Options(pkgOpts...).
-				Value(&pickedPkgIDs),
+				Value(&req.Packages),
 		),
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().
 				Title(fmt.Sprintf("GitHub orgs this VM may touch (your user %q is always allowed)", ghUser)).
 				Description("Broker denies traffic to owners not on this list.").
 				Options(orgOpts...).
-				Value(&pickedOrgs),
+				Value(&req.Orgs),
 		).WithHideFunc(func() bool { return len(orgs) == 0 }),
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().
 				Title("Broker deny rules — destructive operations to block").
 				Description("All pre-selected. Uncheck any you don't want enforced. (Editable later at ~/.colima/<name>/policy.json.)").
 				Options(denyOpts...).
-				Value(&pickedDenyIDs).
+				Value(&req.DenyRuleIDs).
 				Height(15),
 		),
 		// ---- optional: fly.io brokering ----
@@ -808,20 +584,20 @@ func cmdSetup(args []string) error {
 				Description("Lets the agent call a small allowlist of fly endpoints (app status, log streaming) via the broker. Default: read-only + logs, for all apps or just the ones you list.").
 				Affirmative("Yes, configure fly.io").
 				Negative("Skip").
-				Value(&enableFly),
+				Value(&req.EnableFly),
 		),
 		huh.NewGroup(
 			huh.NewInput().
 				Title("Fly upstream token").
-				Description("Create a scoped one with `fly tokens create deploy -a <app>` or `fly tokens create org-read-only -o <org>`. Stored at ~/.colimander/tokens.json (0600).").
+				Description("Create a scoped one with `fly tokens create deploy -a <app>` or `fly tokens create org-read-only -o <org>`. Stored encrypted in ~/.colimander/vault.db.").
 				EchoMode(huh.EchoModePassword).
-				Value(&flyToken).
-				Validate(validateNonEmpty),
+				Value(&req.FlyToken).
+				Validate(sandbox.ValidateNonEmpty),
 			huh.NewInput().
 				Title("Allowed fly app names").
 				Description("Comma-separated. Leave blank to allow all apps the token can see (endpoints stay read-only + logs).").
-				Value(&flyAppsCSV),
-		).WithHideFunc(func() bool { return !enableFly }),
+				Value(&req.FlyApps),
+		).WithHideFunc(func() bool { return !req.EnableFly }),
 		// ---- optional: doppler brokering ----
 		huh.NewGroup(
 			huh.NewConfirm().
@@ -829,29 +605,37 @@ func cmdSetup(args []string) error {
 				Description("Lets the agent add secrets to listed projects. Reads and deletes are denied by default.").
 				Affirmative("Yes, configure Doppler").
 				Negative("Skip").
-				Value(&enableDoppler),
+				Value(&req.EnableDoppler),
 		),
 		huh.NewGroup(
 			huh.NewInput().
 				Title("Doppler upstream token").
-				Description("Create a service token at https://dashboard.doppler.com (Workplace → Tokens). Scope it to one project + config for least privilege. Stored at ~/.colimander/tokens.json (0600).").
+				Description("Create a service token at https://dashboard.doppler.com (Workplace → Tokens). Scope it to one project + config for least privilege. Stored encrypted in ~/.colimander/vault.db.").
 				EchoMode(huh.EchoModePassword).
-				Value(&dopplerToken).
-				Validate(validateNonEmpty),
+				Value(&req.DopplerToken).
+				Validate(sandbox.ValidateNonEmpty),
 			huh.NewInput().
 				Title("Allowed Doppler project names").
 				Description("Comma-separated. The broker refuses requests carrying a `project` query value outside this list.").
-				Value(&dopplerProjectsCSV).
-				Validate(validateNonEmpty),
-		).WithHideFunc(func() bool { return !enableDoppler }),
+				Value(&req.DopplerProjects).
+				Validate(sandbox.ValidateNonEmpty),
+		).WithHideFunc(func() bool { return !req.EnableDoppler }),
 		huh.NewGroup(
 			huh.NewConfirm().
 				Title("Start the credential broker now?").
 				Description("Required for VM→GitHub traffic. If you skip, the next `colimander start` will activate it.").
 				Affirmative("Start").
 				Negative("Skip for now").
-				Value(&startBroker),
+				Value(&req.StartBroker),
 		),
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Monitor this sandbox's web traffic?").
+				Description("Records destinations and byte counts. Nothing is blocked, but the VM loses web access while the daemon is down.").
+				Affirmative("Monitor").
+				Negative("Skip").
+				Value(&req.Egress),
+		).WithHideFunc(func() bool { return !req.StartBroker }),
 	)
 	if err := form.Run(); err != nil {
 		if errors.Is(err, huh.ErrUserAborted) {
@@ -860,51 +644,24 @@ func cmdSetup(args []string) error {
 		}
 		return err
 	}
-
-	cpu, _ := strconv.Atoi(cpuStr)
-	memory, _ := strconv.Atoi(memStr)
-	disk, _ := strconv.Atoi(diskStr)
-	swap, _ := strconv.Atoi(swapStr)
-	if doImport {
-		if abs, err := filepath.Abs(expandHome(importPath)); err == nil {
-			importPath = abs
-		}
-	} else {
-		importPath = ""
+	if !req.StartBroker {
+		req.Egress = false
 	}
-	pkgs := pkgsFromIDs(pickedPkgIDs)
-	policy := &broker.Policy{
-		Version:       broker.PolicyVersion,
-		Handle:        broker.GenerateHandle(),
-		AllowedOwners: append([]string{ghUser}, pickedOrgs...),
-		DenyRules:     filterRulesByID(allRules, pickedDenyIDs),
+	spec, secrets, err := req.Spec(version, ghUser, req.DenyRuleIDs)
+	if err != nil {
+		return err
 	}
-	if enableFly {
-		flyApps := splitCSV(flyAppsCSV)
-		if len(flyApps) == 0 {
-			flyApps = []string{"*"}
-		}
-		policy.FlyPolicy = &broker.FlyPolicy{
-			AllowedApps:      flyApps,
-			AllowedEndpoints: broker.DefaultFlyEndpoints(),
-		}
-	}
-	if enableDoppler {
-		policy.DopplerPolicy = &broker.DopplerPolicy{
-			AllowedProjects:  splitCSV(dopplerProjectsCSV),
-			AllowedEndpoints: broker.DefaultDopplerEndpoints(),
-		}
-	}
+	pkgs := sandbox.PackagesFromIDs(spec.Packages)
 
 	fmt.Println("About to create:")
-	fmt.Printf("  Profile:        %s\n", name)
+	fmt.Printf("  Profile:        %s\n", spec.Name)
 	swapStrLabel := "none"
-	if swap > 0 {
-		swapStrLabel = fmt.Sprintf("%d GiB", swap)
+	if spec.Swap > 0 {
+		swapStrLabel = fmt.Sprintf("%d GiB", spec.Swap)
 	}
-	fmt.Printf("  Resources:      %d CPU / %d GiB RAM / %d GiB disk / swap %s\n", cpu, memory, disk, swapStrLabel)
-	if importPath != "" {
-		fmt.Printf("  Import:         %s\n", importPath)
+	fmt.Printf("  Resources:      %d CPU / %d GiB RAM / %d GiB disk / swap %s\n", spec.CPU, spec.Memory, spec.Disk, swapStrLabel)
+	if spec.ImportPath != "" {
+		fmt.Printf("  Import:         %s\n", spec.ImportPath)
 	}
 	if len(pkgs) > 0 {
 		labels := make([]string, 0, len(pkgs))
@@ -913,24 +670,26 @@ func cmdSetup(args []string) error {
 		}
 		fmt.Printf("  Packages:       %s\n", strings.Join(labels, ", "))
 	}
-	fmt.Printf("  Allowed owners: %s\n", strings.Join(policy.AllowedOwners, ", "))
-	fmt.Printf("  Deny rules:     %d / %d enforced\n", len(policy.DenyRules), len(allRules))
-	if policy.FlyPolicy != nil {
-		flyApps := strings.Join(policy.FlyPolicy.AllowedApps, ", ")
-		if broker.ContainsFold(policy.FlyPolicy.AllowedApps, "*") {
+	fmt.Printf("  Allowed owners: %s\n", strings.Join(append([]string{spec.Login}, spec.Orgs...), ", "))
+	fmt.Printf("  Deny rules:     %d / %d enforced\n", len(spec.DenyRules), len(allRules))
+	if spec.Fly {
+		flyApps := strings.Join(spec.FlyApps, ", ")
+		if broker.ContainsFold(spec.FlyApps, "*") {
 			flyApps = "all apps"
 		}
-		fmt.Printf("  Fly apps:       %s (%d allowed endpoint(s))\n",
-			flyApps, len(policy.FlyPolicy.AllowedEndpoints))
+		fmt.Printf("  Fly apps:       %s (%d allowed endpoint(s))\n", flyApps, len(broker.DefaultFlyEndpoints()))
 	}
-	if policy.DopplerPolicy != nil {
+	if spec.Doppler {
 		fmt.Printf("  Doppler projects: %s (%d allowed endpoint(s))\n",
-			strings.Join(policy.DopplerPolicy.AllowedProjects, ", "), len(policy.DopplerPolicy.AllowedEndpoints))
+			strings.Join(spec.Projects, ", "), len(broker.DefaultDopplerEndpoints()))
 	}
-	if startBroker {
+	if spec.Broker {
 		fmt.Println("  Broker:         start now + wire VM-side git/api routing")
 	} else {
 		fmt.Println("  Broker:         skip (will activate on next `colimander start`)")
+	}
+	if spec.Egress {
+		fmt.Println("  Egress:         monitor web traffic")
 	}
 	fmt.Println()
 
@@ -953,189 +712,47 @@ func cmdSetup(args []string) error {
 	}
 	fmt.Println()
 
-	m := &marker{
-		Name:              name,
-		CreatedAt:         time.Now().UTC(),
-		ColimanderVersion: version,
-		CPU:               cpu,
-		Memory:            memory,
-		Disk:              disk,
-		SwapGiB:           swap,
-	}
-	if importPath != "" {
-		m.ImportedFrom = importPath
-		m.ImportMode = "dir"
-	}
-	if err := writeMarker(m); err != nil {
-		return err
-	}
-	if err := writeColimaConfig(m); err != nil {
-		return err
-	}
-	if err := broker.SavePolicy(name, policy); err != nil {
-		return fmt.Errorf("save policy: %w", err)
-	}
-	if enableFly || enableDoppler {
-		pt := broker.ProfileTokens{}
-		if enableFly {
-			pt.Fly = strings.TrimSpace(flyToken)
-		}
-		if enableDoppler {
-			pt.Doppler = strings.TrimSpace(dopplerToken)
-		}
-		if err := broker.SetProfileTokens(name, pt); err != nil {
-			return fmt.Errorf("save upstream tokens: %w", err)
+	hooks := broker.SetupHooks()
+	hooks.AfterBoot = func(string) {
+		if err := syncEtcHosts(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to update /etc/hosts: %v\n", err)
+			fmt.Fprintf(os.Stderr, "  retry manually with: colimander hosts-sync\n")
 		}
 	}
-	if err := startProfile(m); err != nil {
-		return err
-	}
-	if importPath != "" {
-		if err := importDirIntoVM(name, importPath); err != nil {
-			return fmt.Errorf("import-dir: %w", err)
-		}
-	}
-	if startBroker {
-		if err := broker.ActivateBrokerForProfile(name); err != nil {
+	for _, step := range sandbox.Steps(spec, secrets, hooks) {
+		if err := step.Run(terminal); err != nil {
+			if !step.Soft {
+				return err
+			}
 			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 		}
 	}
-	installBaseline(name)
-	installPackages(name, pkgs)
 
 	fmt.Println()
 	fmt.Println("Profile ready. Next steps:")
-	fmt.Printf("  - Edit over SSH (in your editor's remote-host picker):  lima-%s\n", limaInstanceName(name))
-	if importPath != "" {
-		vmUser, _ := vmUserName()
-		fmt.Printf("    Source landed at /home/%s/%s inside the VM.\n", vmUser, filepath.Base(importPath))
+	for _, n := range sandbox.NextSteps(spec) {
+		fmt.Printf("  - %s:  %s\n", n.Label, n.Value)
 	}
-	fmt.Printf("  - Browser:       http://%s.local:<port>\n", name)
-	fmt.Printf("  - List ports:    colimander ports %s\n", name)
-	fmt.Printf("  - SSH shell:     colimander ssh %s\n", name)
-	fmt.Printf("  - Stop:          colimander stop %s\n", name)
 	fmt.Println()
 	return nil
 }
 
-// ------------------------------ wizard helpers ------------------------------
-
-func validatePositiveInt(s string) error {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return fmt.Errorf("required")
-	}
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return fmt.Errorf("must be an integer")
-	}
-	if n <= 0 {
-		return fmt.Errorf("must be > 0")
-	}
-	return nil
-}
-
-func validateNonEmpty(s string) error {
-	if strings.TrimSpace(s) == "" {
-		return fmt.Errorf("required")
-	}
-	return nil
-}
-
-// splitCSV splits a comma-separated list, trims whitespace, drops empties.
-func splitCSV(s string) []string {
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
+// checkDeps prints what setup needs and fails if anything's missing.
+func checkDeps() error {
+	fmt.Println("Checking dependencies:")
+	missing := 0
+	for _, d := range sandbox.CheckDeps() {
+		if !d.OK {
+			fmt.Printf("  %-10s missing  —  install with: %s\n", d.Bin, d.Install)
+			missing++
+			continue
 		}
+		fmt.Printf("  %-10s %s  (%s)\n", d.Bin, d.Path, d.Version)
 	}
-	return out
-}
-
-func validateNonNegativeInt(s string) error {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return fmt.Errorf("required")
-	}
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return fmt.Errorf("must be an integer")
-	}
-	if n < 0 {
-		return fmt.Errorf("must be >= 0")
+	if missing > 0 {
+		return fmt.Errorf("%d dependency missing; install and re-run `colimander setup`", missing)
 	}
 	return nil
-}
-
-func validateImportPath(s string) error {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return fmt.Errorf("required")
-	}
-	abs, err := filepath.Abs(expandHome(s))
-	if err != nil {
-		return err
-	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		return fmt.Errorf("%s: %w", abs, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("%s is not a directory", abs)
-	}
-	return nil
-}
-
-// denyRuleLabel renders a deny rule as one line suitable for huh's MultiSelect.
-// API rules show as "METHOD path-glob — reason"; git rules show as "git push
-// delete <ref> — reason". Truncated at ~110 chars to keep the list scannable.
-func denyRuleLabel(r broker.DenyRule) string {
-	var head string
-	switch r.Kind {
-	case "api":
-		head = fmt.Sprintf("%-6s %s", r.Method, r.PathGlob)
-	case "git-delete-ref":
-		head = "git push delete " + r.RefGlob
-	default:
-		head = r.ID
-	}
-	reason := r.Reason
-	if reason == "" {
-		reason = r.ID
-	}
-	label := head + "  —  " + reason
-	if len(label) > 110 {
-		label = label[:107] + "..."
-	}
-	return label
-}
-
-func filterRulesByID(all []broker.DenyRule, ids []string) []broker.DenyRule {
-	keep := make(map[string]bool, len(ids))
-	for _, id := range ids {
-		keep[id] = true
-	}
-	out := make([]broker.DenyRule, 0, len(ids))
-	for _, r := range all {
-		if keep[r.ID] {
-			out = append(out, r)
-		}
-	}
-	return out
-}
-
-func pkgsFromIDs(ids []string) []vmPackage {
-	out := make([]vmPackage, 0, len(ids))
-	for _, id := range ids {
-		for _, p := range availablePackages {
-			if p.ID == id {
-				out = append(out, p)
-				break
-			}
-		}
-	}
-	return out
 }
 
 // ------------------------------ policy subcommand --------------------------
@@ -1153,7 +770,7 @@ func cmdPolicy(args []string) error {
 			return err
 		}
 		if len(owners) == 0 {
-			if u, err := ghCurrentLogin(); err == nil {
+			if u, err := sandbox.GHCurrentLogin(); err == nil {
 				owners = []string{u}
 			}
 		}
@@ -1187,30 +804,6 @@ type multiFlag []string
 
 func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
-
-// ------------------------------ gh shellouts -------------------------------
-
-func ghCurrentLogin() (string, error) {
-	out, err := exec.Command("gh", "api", "user", "--jq", ".login").Output()
-	if err != nil {
-		return "", fmt.Errorf("gh api user: %w (is `gh auth status` healthy?)", err)
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-func ghOrgs() ([]string, error) {
-	out, err := exec.Command("gh", "api", "user/orgs", "--paginate", "--jq", ".[].login").Output()
-	if err != nil {
-		return nil, fmt.Errorf("gh api user/orgs: %w", err)
-	}
-	var orgs []string
-	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if l = strings.TrimSpace(l); l != "" {
-			orgs = append(orgs, l)
-		}
-	}
-	return orgs, nil
-}
 
 // ------------------------------ init ----------------------------------------
 
@@ -1375,166 +968,14 @@ func cmdHostsSync(args []string) error {
 
 // ------------------------------ source import -------------------------------
 
-// limaHome returns the directory where colima keeps its bundled lima
-// instances. Colima 0.8+ puts them under ~/.colima/_lima/ instead of the
-// default ~/.lima/, so any limactl invocation needs LIMA_HOME pointed there.
-func limaHome() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".colima", "_lima")
-}
-
 // runLimactl runs `limactl <args>` with the colima-managed LIMA_HOME so
 // instance names like colima-<profile> resolve correctly.
 func runLimactl(args ...string) error {
 	cmd := exec.Command("limactl", args...)
-	cmd.Env = append(os.Environ(), "LIMA_HOME="+limaHome())
+	cmd.Env = append(os.Environ(), "LIMA_HOME="+sandbox.LimaHome())
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
-}
-
-// importDirIntoVM copies a host directory into the VM at /home/<vmuser>/<basename>.
-// Caller is responsible for ensuring the VM is running.
-//
-// While limactl cp runs (silent, single-stream scp), a background goroutine
-// polls the VM target with `du -sb` every 2s and rewrites a single line with
-// "X / Y (Z%) — elapsed". Stops on completion or any limactl error.
-func importDirIntoVM(profile, srcDir string) error {
-	abs, err := filepath.Abs(srcDir)
-	if err != nil {
-		return err
-	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		return fmt.Errorf("import-dir %q: %w", abs, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("import-dir %q is not a directory", abs)
-	}
-	vmUser, err := vmUserName()
-	if err != nil {
-		return err
-	}
-	instance := limaInstanceName(profile)
-	dest := fmt.Sprintf("%s:/home/%s/", instance, vmUser)
-	vmTarget := fmt.Sprintf("/home/%s/%s", vmUser, filepath.Base(abs))
-
-	fmt.Printf("Importing %s into %s%s ...\n", abs, dest, filepath.Base(abs))
-
-	srcSize, sizeErr := dirAppSize(abs)
-
-	cmd := exec.Command("limactl", "cp", "-r", abs, dest)
-	cmd.Env = append(os.Environ(), "LIMA_HOME="+limaHome())
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	stop := make(chan struct{})
-	done := make(chan struct{})
-	if sizeErr == nil && srcSize > 0 && isTTY(os.Stdout) {
-		go func() {
-			defer close(done)
-			progressLoop(profile, vmTarget, srcSize, stop)
-		}()
-	} else {
-		close(done)
-	}
-
-	waitErr := cmd.Wait()
-	close(stop)
-	<-done
-
-	if isTTY(os.Stdout) && sizeErr == nil && srcSize > 0 {
-		if waitErr == nil {
-			fmt.Printf("\r  %s imported.%s\n", humanSize(srcSize), strings.Repeat(" ", 40))
-		} else {
-			fmt.Printf("\r%s\r", strings.Repeat(" ", 80))
-		}
-	}
-	return waitErr
-}
-
-func dirAppSize(p string) (int64, error) {
-	var total int64
-	err := filepath.WalkDir(p, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		total += info.Size()
-		return nil
-	})
-	return total, err
-}
-
-func progressLoop(profile, vmPath string, total int64, stop <-chan struct{}) {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	start := time.Now()
-	for {
-		select {
-		case <-stop:
-			return
-		case <-ticker.C:
-			n, err := vmPathBytes(profile, vmPath)
-			if err != nil {
-				continue
-			}
-			pct := float64(n) / float64(total) * 100
-			if pct > 100 {
-				pct = 100
-			}
-			elapsed := time.Since(start).Round(time.Second)
-			fmt.Printf("\r  %s / %s  (%3.0f%%)  %s elapsed   ",
-				humanSize(n), humanSize(total), pct, elapsed)
-		}
-	}
-}
-
-func vmPathBytes(profile, path string) (int64, error) {
-	out, err := exec.Command("colima", "ssh", "-p", profile, "--", "du", "-sb", path).Output()
-	if err != nil {
-		return 0, err
-	}
-	fields := strings.Fields(string(out))
-	if len(fields) < 1 {
-		return 0, errors.New("empty du output")
-	}
-	return strconv.ParseInt(fields[0], 10, 64)
-}
-
-func humanSize(n int64) string {
-	const (
-		kib = 1024
-		mib = kib * 1024
-		gib = mib * 1024
-	)
-	switch {
-	case n >= gib:
-		return fmt.Sprintf("%.2f GiB", float64(n)/float64(gib))
-	case n >= mib:
-		return fmt.Sprintf("%.1f MiB", float64(n)/float64(mib))
-	case n >= kib:
-		return fmt.Sprintf("%.0f KiB", float64(n)/float64(kib))
-	default:
-		return fmt.Sprintf("%d B", n)
-	}
-}
-
-func isTTY(f *os.File) bool {
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
 }
 
 // ------------------------------ ports ---------------------------------------

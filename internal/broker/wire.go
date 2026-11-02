@@ -3,6 +3,7 @@ package broker
 import (
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -17,6 +18,10 @@ import (
 // Basic-auth identity landed), one is generated and saved here so existing
 // VMs upgrade transparently on next start.
 func ActivateBrokerForProfile(profile string) error {
+	return activateBroker(profile, os.Stdout, os.Stderr)
+}
+
+func activateBroker(profile string, out, errOut io.Writer) error {
 	pol, err := LoadPolicy(profile)
 	if err != nil {
 		return fmt.Errorf("load policy: %w", err)
@@ -30,7 +35,7 @@ func ActivateBrokerForProfile(profile string) error {
 	if err := ensureBrokerRunning(); err != nil {
 		return fmt.Errorf("broker start: %w", err)
 	}
-	if err := wireBrokerInVM(profile, pol); err != nil {
+	if err := wireBrokerInVM(profile, pol, out, errOut); err != nil {
 		return fmt.Errorf("wire broker in VM: %w", err)
 	}
 	return nil
@@ -59,7 +64,7 @@ func ensureBrokerRunning() error {
 //   - Fly/Doppler: env vars FLY_API_HOSTNAME/FLY_API_TOKEN and
 //     DOPPLER_API_HOST/DOPPLER_TOKEN, with token = "<profile>:<handle>" so
 //     the broker can identify the caller from the Bearer header.
-func wireBrokerInVM(profile string, pol *Policy) error {
+func wireBrokerInVM(profile string, pol *Policy, out, errOut io.Writer) error {
 	brokerBase := fmt.Sprintf("http://host.lima.internal:%d", defaultBrokerPort)
 	gitInsteadOfVar := fmt.Sprintf("url.%s/git/.insteadOf", brokerBase)
 	extraHeaderVar := fmt.Sprintf("http.%s/.extraHeader", brokerBase)
@@ -89,18 +94,21 @@ for k in $(git config --global --get-regexp '^http\..*host\.lima\.internal.*\.ex
 done
 true`
 
-	cmdSteps := [][]string{
-		{"bash", "-c", cleanup},
-		{"git", "config", "--global", gitInsteadOfVar, "https://github.com/"},
-		{"git", "config", "--global", extraHeaderVar, extraHeaderVal},
+	cmdSteps := []struct {
+		what string // goes in errors, so it must not hold the handle
+		args []string
+	}{
+		{"clean up old git config", []string{"bash", "-c", cleanup}},
+		{"set git URL rewrite", []string{"git", "config", "--global", gitInsteadOfVar, "https://github.com/"}},
+		{"set git auth header", []string{"git", "config", "--global", extraHeaderVar, extraHeaderVal}},
 	}
 	for _, step := range cmdSteps {
-		args := append([]string{"ssh", "-p", profile, "--"}, step...)
+		args := append([]string{"ssh", "-p", profile, "--"}, step.args...)
 		cmd := exec.Command("colima", args...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		cmd.Stdout = out
+		cmd.Stderr = errOut
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("vm-wire %v: %w", step, err)
+			return fmt.Errorf("vm-wire %s: %w", step.what, err)
 		}
 	}
 	// Write /etc/profile.d/colimander.sh from stdin via `sudo tee` — handles
@@ -109,7 +117,7 @@ true`
 		"sudo", "tee", "/etc/profile.d/colimander.sh")
 	teeCmd.Stdin = strings.NewReader(profileScript)
 	teeCmd.Stdout = nil // discard tee echo
-	teeCmd.Stderr = os.Stderr
+	teeCmd.Stderr = errOut
 	if err := teeCmd.Run(); err != nil {
 		return fmt.Errorf("vm-wire write profile.d: %w", err)
 	}
