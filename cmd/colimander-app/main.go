@@ -22,8 +22,9 @@ import (
 	"github.com/vepsala/colimander/internal/broker"
 )
 
-// withFolderPicker adds the one thing the page can't do itself: a native dialog.
-func withFolderPicker(ui http.Handler, ctx *context.Context) http.Handler {
+// withNative adds what the page can't do itself: a native dialog, and a clipboard
+// write that still works after an awaited request has used up the click.
+func withNative(ui http.Handler, ctx *context.Context) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/", ui)
 	mux.HandleFunc("POST /native/pick-folder", func(w http.ResponseWriter, r *http.Request) {
@@ -38,6 +39,10 @@ func withFolderPicker(ui http.Handler, ctx *context.Context) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"path": path})
 	})
+	mux.Handle("POST /native/copy", appui.CopyHandler(
+		func(text string) error { return runtime.ClipboardSetText(*ctx, text) },
+		func() (string, error) { return runtime.ClipboardGetText(*ctx) },
+	))
 	return mux
 }
 
@@ -49,7 +54,7 @@ func main() {
 		Height:      680,
 		MinWidth:    640,
 		MinHeight:   400,
-		AssetServer: &assetserver.Options{Handler: withFolderPicker(appui.Handler(broker.ControlSocket(), broker.DBAdminSocket()), &appCtx)},
+		AssetServer: &assetserver.Options{Handler: withNative(appui.Handler(broker.ControlSocket(), broker.DBAdminSocket()), &appCtx)},
 		OnStartup:   func(ctx context.Context) { appCtx = ctx },
 		Mac: &mac.Options{
 			TitleBar: mac.TitleBarHiddenInset(),

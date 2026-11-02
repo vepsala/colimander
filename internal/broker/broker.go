@@ -474,21 +474,6 @@ func brokerRun(args []string) error {
 		devProfile: *devProfile,
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/", b.handleAPI)
-	mux.HandleFunc("/api", b.handleAPI)
-	mux.HandleFunc("/git/", b.handleGit)
-	mux.HandleFunc("/fly/", b.handleFly)
-	mux.HandleFunc("/fly", b.handleFly)
-	mux.HandleFunc("/doppler/", b.handleDoppler)
-	mux.HandleFunc("/doppler", b.handleDoppler)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "ok")
-	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		b.errorResponse(w, http.StatusNotFound, "broker: unknown path "+r.URL.Path)
-	})
-
 	// VMs reach the Mac's loopback through Lima's host address, so nothing needs
 	// a wider bind, and a wider bind would expose the broker to the local network.
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
@@ -504,7 +489,27 @@ func brokerRun(args []string) error {
 	stopDB := startDBProxy()
 	defer stopDB()
 	log.Printf("colimander broker listening on %s (audit: %s)", addr, b.auditPath)
-	return http.ListenAndServe(addr, mux)
+	return http.ListenAndServe(addr, b.vmHandler())
+}
+
+// vmHandler is everything a VM can reach. Admin routes never go here: they belong on
+// the control socket.
+func (b *broker) vmHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/", b.handleAPI)
+	mux.HandleFunc("/api", b.handleAPI)
+	mux.HandleFunc("/git/", b.handleGit)
+	mux.HandleFunc("/fly/", b.handleFly)
+	mux.HandleFunc("/fly", b.handleFly)
+	mux.HandleFunc("/doppler/", b.handleDoppler)
+	mux.HandleFunc("/doppler", b.handleDoppler)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "ok")
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		b.errorResponse(w, http.StatusNotFound, "broker: unknown path "+r.URL.Path)
+	})
+	return mux
 }
 
 func brokerStartBg(args []string) error {

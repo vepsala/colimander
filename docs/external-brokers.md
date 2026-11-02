@@ -148,7 +148,7 @@ Don't use your personal flyctl token. Instead create a scoped one:
 
 ```sh
 # Read-only over one org:
-fly tokens create org-read-only -o my-org
+fly tokens create readonly -o my-org --expiry 720h
 
 # Deploy permission to one specific app (still consider whether you really
 # want the agent able to deploy):
@@ -164,6 +164,17 @@ In the Doppler dashboard → your workplace → Tokens, create a **service
 token** scoped to a single project + config. Doppler service tokens are
 already per-config; pair that with `allowed_projects` in the broker policy
 and you've got two narrow gates.
+
+## Short-lived tokens to paste by hand
+
+For work the broker doesn't allow, such as destructive `fly` commands, open **Fly tokens** under Tools in the app. It's separate from the broker: these tokens aren't upstream tokens, and nothing puts them in a VM.
+
+- Each org your Mac's `fly` login can see has a one-click action that runs `fly tokens create org <org> --expiry 4h --name claude-temp-<time> --json` and copies the result. The view's selectors offer 1, 4, 8 or 24 hours and a read-only type. An org token reaches every app in that org.
+- The token goes on the clipboard, where it stays until you copy something else. If that fails, it's shown once with a Copy button until you dismiss it.
+- Values aren't stored. `~/.colimander/fly-tokens.json` keeps the org, type, name and times, and `audit.log` records creating and revoking under `FLY-TOKEN`. Those entries belong to the Mac, so they don't appear under a sandbox's Broker activity.
+- Revoke finds the token by name in `fly tokens list`. If it isn't listed there, the app says so, and the token stays valid until it expires.
+
+The daemon only runs fixed commands, with no shell, and these routes exist only on the private control socket.
 
 ## Streaming
 

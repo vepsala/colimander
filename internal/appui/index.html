@@ -40,6 +40,7 @@ code.block{display:block;padding:8px 10px;margin:6px 0;border-radius:6px;backgro
 .sel{user-select:text;-webkit-user-select:text;cursor:text}
 .conns{border-top:1px solid var(--line)}
 .conn{display:flex;align-items:center;gap:10px;width:100%;padding:10px 4px;border:0;border-bottom:1px solid var(--line);background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.connrow{display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line)}.connrow .conn{flex:1;min-width:0;border-bottom:0}.connact{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:6px;flex:0 1 auto;max-width:45%;text-align:right;padding-right:4px}
 .connmain{flex:1;min-width:0;display:block}.connname{display:block;font-weight:600}.connup,.connmeta{display:block;color:var(--muted);font-size:12px}
 .connup{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chev{color:var(--muted)}
 .csbox{margin:14px 0}.cslabel{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}.copied{color:var(--ok);font-weight:600}.cslabel .act{color:var(--fg)}
@@ -75,14 +76,18 @@ input[type=text]::placeholder{color:var(--muted);opacity:.8}
 @media(prefers-reduced-motion:reduce){.ico.running{animation:none;border-top-color:var(--accent)}}
 .stdetail{color:var(--muted);font-size:12px;overflow-wrap:anywhere}
 .steps code.block{margin-top:4px}
+.flybar{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px}.flybar .fld{flex:0 1 150px;margin-top:0}.flybar .fld.grow{flex:1 1 150px}
+.flyorgs{border-top:1px solid var(--line)}.flyorg{display:flex;align-items:center;gap:10px;padding:7px 4px;border-bottom:1px solid var(--line)}.flyorg .connmain{overflow-wrap:anywhere}.flyorg .act{flex:none}
 @media(max-width:760px){main{padding:24px 16px}.sug{grid-template-columns:84px auto auto 1fr}.sugname{grid-column:1/-1}}
 </style></head><body>
-<aside><h2>Sandboxes</h2><div id="list"></div><div id="jobs"></div><button class="sb newsb" id="newsb">+ New sandbox</button><h2 style="margin-top:16px">Tools</h2><button class="sb" id="dbnav">Databases<span id="dbbadge" class="tag" hidden></span></button><button class="sb" id="othernav">Other traffic</button></aside>
+<aside><h2>Sandboxes</h2><div id="list"></div><div id="jobs"></div><button class="sb newsb" id="newsb">+ New sandbox</button><h2 style="margin-top:16px">Tools</h2><button class="sb" id="dbnav">Databases<span id="dbbadge" class="tag" hidden></span></button><button class="sb" id="flynav">Fly tokens</button><button class="sb" id="othernav">Other traffic</button></aside>
 <div id="dragbar"></div><main id="main"></main>
 <script>
 const providers=[["anthropic.com","Anthropic"],["claude.ai","Anthropic"],["openai.com","OpenAI"],["chatgpt.com","OpenAI"],["googleapis.com","Google"],["cursor.sh","Cursor"],["x.ai","xAI"],["openrouter.ai","OpenRouter"],["groq.com","Groq"]];
+// state.showOther is true for Other traffic, "fly" for Fly tokens, otherwise false.
 let state={sandboxes:[],selected:null,tab:"egress",egress:[],events:[],error:null,busy:null,confirming:null,
-  jobs:[],setupView:null,jobId:null,wf:null,opts:null,optsErr:null,jobNote:null,jobBusy:false,jobsLoaded:false,pending:[],conns:[],secEvents:[],dbLoaded:false,dbError:null,dbNotice:null,dbBusy:null,dbGen:0,dbTab:"connections",dbView:{name:"list"},dbf:null,dbCopied:null};
+  jobs:[],setupView:null,jobId:null,wf:null,opts:null,optsErr:null,jobNote:null,jobBusy:false,jobsLoaded:false,pending:[],conns:[],secEvents:[],dbLoaded:false,dbError:null,dbNotice:null,dbBusy:null,dbGen:0,dbTab:"connections",dbView:{name:"list"},dbf:null,dbCopied:null,
+  fly:{orgs:null,err:null,lifetimes:[],lifetime:"4h",type:"org",filter:"",tokens:[],busy:null,note:null,shown:null,copy:null,loading:false}};
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const size=n=>n>=1073741824?(n/1073741824).toFixed(1)+" GB":n>=1048576?(n/1048576).toFixed(1)+" MB":n>=1024?(n/1024).toFixed(1)+" KB":n+" B";
 const when=t=>t?new Date(t).toLocaleString(undefined,{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}):"";
@@ -99,6 +104,7 @@ async function refresh(){
       state.events=ev.filter(e=>e.profile===state.selected&&e.surface!=="EGRESS").slice(-200).reverse();
     }
     state.other=await api("/other-traffic");
+    if(state.showOther==="fly")await flyRefresh();
     state.error=null;
   }catch(e){state.error=e.message}
   await refreshJobs();
@@ -121,7 +127,8 @@ function showDB(on){
 function render(){
   const list=document.getElementById("list"),main=document.getElementById("main");
   const badge=document.getElementById("dbbadge");badge.hidden=!state.approvals;badge.textContent=state.approvals+" waiting";
-  document.getElementById("othernav").setAttribute("aria-current",!!state.showOther&&!state.setupView);
+  document.getElementById("othernav").setAttribute("aria-current",state.showOther===true&&!state.setupView);
+  document.getElementById("flynav").setAttribute("aria-current",state.showOther==="fly"&&!state.setupView);
   patch(list,state.sandboxes.map(s=>`<button class="sb" data-key="${esc(s.name)}" data-name="${esc(s.name)}" aria-current="${!state.db&&!state.setupView&&!state.showOther&&s.name===state.selected}"><span class="dot ${s.suspended_reason?"susp":s.status==="Running"?"on":""}"></span>${esc(s.name)}</button>`).join(""));
   patch(document.getElementById("jobs"),state.jobs.map(j=>`<button class="sb" data-key="j${esc(j.id)}" data-job="${esc(j.id)}" aria-current="${state.setupView==="job"&&state.jobId===j.id}"><span class="dot ${jobDot(j)}"></span>${esc(j.name)}<span class="tag">${esc(jobTag(j))}</span></button>`).join(""));
   document.getElementById("newsb").setAttribute("aria-current",state.setupView==="form");
@@ -129,6 +136,7 @@ function render(){
   if(state.db){patch(main,dbScreen());return}
   const err=state.error?`<div class="banner">${esc(state.error==="daemon not running"?"The Colimander daemon isn't running. Start it with: colimander broker start":state.error)}</div>`:"";
   const appr=state.approvals&&!state.db?`<div class="banner">${state.approvals} database request${state.approvals>1?"s are":" is"} waiting for approval. Requests are denied if nobody answers in time. <button class="act" data-db="review">Review</button></div>`:"";
+  if(state.showOther==="fly"){patch(main,(err?`<div data-key="ferr">${err}</div>`:"")+(appr?`<div data-key="fappr">${appr}</div>`:"")+flyScreen());return}
   if(state.showOther){main.innerHTML=err+appr+other();return}
   const s=state.sandboxes.find(x=>x.name===state.selected);
   if(!s){main.innerHTML=err+appr+(state.error?"":`<div class="empty">No Colimander sandboxes yet. Use New sandbox to create one.</div>`);return}
@@ -189,9 +197,10 @@ function syncNode(a,b){
   if(a.nodeType!==1){if(a.nodeValue!==b.nodeValue)a.nodeValue=b.nodeValue;return}
   for(const {name} of [...a.attributes])if(!b.hasAttribute(name))a.removeAttribute(name);
   for(const {name,value} of [...b.attributes])if(a.getAttribute(name)!==value)a.setAttribute(name,value);
+  const want=b.nodeName==="SELECT"?b.value:null; // syncKids can move b's options into a
   syncKids(a,b);
   if(a.nodeName==="INPUT"){if(a.type==="checkbox")a.checked=b.hasAttribute("checked");else if(a.type!=="password"&&a.value!==b.getAttribute("value"))a.value=b.getAttribute("value")??""}
-  if(a.nodeName==="SELECT"&&a.value!==b.value)a.value=b.value;
+  if(a.nodeName==="SELECT"&&a.value!==want)a.value=want;
 }
 // What's stored can carry the proxy's old name in messages written for agents.
 const plain=s=>String(s??"").replace(/pg-agent-proxy:\s*/g,"").replace(/pg-agent-proxy/g,"The proxy");
@@ -251,6 +260,12 @@ const dbActs={
   back(){dbGo("connections",{name:"list"})},
   review(){state.showOther=false;showDB(true);dbGo("approvals")},
   copy:dbCopy,
+  async copyrow(a){
+    const id=+a.dataset.id,c=state.conns.find(x=>x.id===id);if(!c?.connection_string||c.suspended_at||isExpired(c))return;
+    const ok=await copyText(c.connection_string);
+    state.dbRowCopy={id,ok};render();
+    clearTimeout(rowCopyTimer);rowCopyTimer=setTimeout(()=>{state.dbRowCopy=null;render()},ok?2500:6000);
+  },
   rotate(a){const id=+a.dataset.id;dbConfirm("db:rotate:"+id,()=>dbDo("rotate",async()=>newCreds(id,await dbApi(`/connections/${id}/rotate`,{method:"POST"}),"New password issued. Update your agent with the string below. Sessions already open keep running until they disconnect.")))},
   resume(a){const id=+a.dataset.id;dbConfirm("db:resume:"+id,()=>dbDo("resume",async()=>newCreds(id,await dbApi(`/connections/${id}/resume`,{method:"POST"}),"Resumed with a new password. The old one stays dead.")))},
   del(a){const id=+a.dataset.id,c=state.conns.find(x=>x.id===id);dbConfirm("db:del:"+id,()=>dbDo("del",async()=>{await dbApi(`/connections/${id}`,{method:"DELETE"});state.conns=state.conns.filter(x=>x.id!==id);state.dbView={name:"list"};dbSay(`Deleted ${c?c.name:"the connection"}.`)}))},
@@ -267,7 +282,7 @@ const dbActs={
   dismiss(a){const f=state.dbf;f.sug=f.sug.filter(x=>x.name!==a.dataset.name);render()},
   acceptall(){const f=state.dbf;f.sug.forEach(s=>accept(f,s));f.sug=[];render()},
 };
-let ruleKey=0;
+let ruleKey=0,rowCopyTimer;
 // A suggestion only joins the unsaved rule list. The table stays blank even when the
 // column was found in one table, since a blank rule also covers tables added later.
 const accept=(f,s)=>f.rules.push({k:++ruleKey,name:s.name,table:"",action:s.action,from:s.tables});
@@ -314,14 +329,18 @@ async function dbSave(){
 }
 // The synchronous copy goes first: it runs inside the click, and a web view that
 // refuses the clipboard API usually allows it. If both fail, say so rather than
-// claim success, and leave the string selected for Command-C.
-async function dbCopy(){
-  const el=document.getElementById("dbcs");if(!el)return;
+// claim success, and leave the text selected for Command-C.
+async function copyFrom(el){
   const sel=getSelection(),range=document.createRange();range.selectNodeContents(el);sel.removeAllRanges();sel.addRange(range);
   let ok=false;
   try{ok=document.execCommand("copy")}catch{}
   if(!ok&&navigator.clipboard)try{await navigator.clipboard.writeText(el.textContent);ok=true}catch{}
   if(ok)sel.removeAllRanges();
+  return ok;
+}
+async function dbCopy(){
+  const el=document.getElementById("dbcs");if(!el)return;
+  const ok=await copyFrom(el);
   state.dbCopied=ok?"ok":"manual";render();
   if(ok)setTimeout(()=>{state.dbCopied=null;render()},2500);
 }
@@ -397,7 +416,7 @@ function connDetail(c){
 function connList(){
   if(!state.dbLoaded)return `<div class="empty" data-key="wait">Loading…</div>`;
   if(!state.conns.length)return `<div class="empty" data-key="none">No database connections yet. Add one to get a connection string you can paste into an agent.</div>`;
-  return `<div class="conns" data-key="conns">${state.conns.map(c=>{const off=c.suspended_at||isExpired(c);return `<button class="conn" data-key="c${c.id}" data-db="open" data-id="${c.id}"><span class="dot ${off?"susp":"on"}"></span><span class="connmain"><span class="connname">${esc(c.name)}${c.suspended_at?`<span class="tag bad">Suspended</span>`:isExpired(c)?`<span class="tag bad">Expired</span>`:""}</span><span class="connup">${esc(c.upstream_url)}</span><span class="connmeta">${esc(limitText(c))} · ${c.gate_mutations?"writes need approval":"writes open"} · ${c.pii_rules?.length||0} PII rule${c.pii_rules?.length===1?"":"s"}</span></span><span class="chev">›</span></button>`}).join("")}</div>`;
+  return `<div class="conns" data-key="conns">${state.conns.map(c=>{const off=c.suspended_at||isExpired(c),why=c.suspended_at?"Suspended":isExpired(c)?"Expired":c.connection_string?"":"Rotate for a new one",rc=state.dbRowCopy?.id===c.id?state.dbRowCopy:null;return `<div class="connrow" data-key="c${c.id}"><button class="conn" data-db="open" data-id="${c.id}"><span class="dot ${off?"susp":"on"}"></span><span class="connmain"><span class="connname">${esc(c.name)}${c.suspended_at?`<span class="tag bad">Suspended</span>`:isExpired(c)?`<span class="tag bad">Expired</span>`:""}</span><span class="connup">${esc(c.upstream_url)}</span><span class="connmeta">${esc(limitText(c))} · ${c.gate_mutations?"writes need approval":"writes open"} · ${c.pii_rules?.length||0} PII rule${c.pii_rules?.length===1?"":"s"}</span></span><span class="chev">›</span></button><span class="connact">${rc?`<span class="${rc.ok?"copied":"deny"}" role="status">${rc.ok?"Copied":"Couldn't copy. Open it to copy by hand."}</span>`:""}${why?`<small>${why}</small>`:""}<button class="act" data-db="copyrow" data-id="${c.id}" aria-label="Copy connection string for ${esc(c.name)}" ${why?"disabled":""}>Copy</button></span></div>`}).join("")}</div>`;
 }
 function approvalsTab(){
   if(!state.pending.length)return `<div class="empty" data-key="none-a">No requests waiting. Writes and large reads that need approval appear here while the agent waits.</div>`;
@@ -418,6 +437,87 @@ function dbScreen(){
   ${n&&t!=="approvals"?`<div class="banner row-b" data-key="dbappr"><span>${n} database request${n>1?"s are":" is"} waiting for approval.</span><span class="spacer"></span><button class="act" data-db="review">Review</button></div>`:""}
   ${state.dbNotice?`<div class="banner ${state.dbNotice.bad?"bad":"good"}" data-key="dbnote" role="status">${esc(plain(state.dbNotice.text))}</div>`:""}
   ${body}`;
+}
+// Fly tokens. The value is on the clipboard or, if that failed, in state.fly.shown
+// until dismissed. Nothing else on the page or in the daemon keeps it.
+const flyTypeLabel={org:"Org",readonly:"Read-only"};
+async function flyLoad(){
+  const F=state.fly;F.loading=true;F.err=null;render();
+  try{const r=await api("/fly/orgs");F.orgs=r.orgs;F.lifetimes=r.lifetimes;F.err=r.error||null}
+  catch(e){F.orgs=[];F.err=flyDaemon(e.message)}
+  F.loading=false;await flyRefresh();render();
+}
+const flyDaemon=m=>/404 page not found/.test(m)?"The running daemon is older than this app, so it can't create Fly tokens. Restart it: colimander broker stop, then colimander broker start":oldDaemon(m);
+async function flyRefresh(){try{state.fly.tokens=await api("/fly/tokens")}catch{}}
+let flyNoteTimer;
+function flySay(text,bad){const F=state.fly;clearTimeout(flyNoteTimer);F.note=text?{text,bad}:null;if(text&&!bad)flyNoteTimer=setTimeout(()=>{F.note=null;render()},30000)}
+// The answer's body decides, not its status: outside the app, this path gets the page.
+async function nativeCopy(text){try{const r=await fetch("/native/copy",{method:"POST",headers:{"Content-Type":"text/plain"},body:text});return (await r.json()).copied===true}catch{return false}}
+// copyText is for text the page doesn't show. Native first, since this runs after a
+// wait that may have used up the click. The element only exists for the one attempt.
+async function copyText(text){
+  if(await nativeCopy(text))return true;
+  const t=document.createElement("textarea");t.value=text;t.style.cssText="position:fixed;left:-9999px";document.body.append(t);t.select();
+  let ok=false;
+  try{ok=document.execCommand("copy")}catch{}
+  t.remove();
+  if(!ok&&navigator.clipboard)try{await navigator.clipboard.writeText(text);ok=true}catch{}
+  return ok;
+}
+const flyTime=t=>new Date(t).toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"});
+const flyActs={
+  async create(a){
+    const F=state.fly,org=a.dataset.org;if(F.busy||F.shown)return;
+    F.busy=org;F.copy=null;flySay(null);render();
+    try{
+      const {token,meta}=await api("/fly/tokens",jsonBody("POST",{org,type:F.type,lifetime:F.lifetime}));
+      const what=`${flyTypeLabel[meta.type]||meta.type} token for ${meta.org}`;
+      if(await nativeCopy(token))flySay(`Copied. ${what}, expires at ${flyTime(meta.expires_at)}. It stays on the clipboard until you copy something else.`);
+      else F.shown={token,what,expires:meta.expires_at};
+    }catch(e){flySay(flyDaemon(e.message),true)}
+    F.busy=null;await flyRefresh();render();
+    document.getElementById("main").scrollTop=0; // the result is above a long list of orgs
+  },
+  async copy(){
+    const F=state.fly,el=document.getElementById("flytok");if(!el)return;
+    const ok=await copyFrom(el)||await nativeCopy(el.textContent);
+    F.copy=ok?"ok":"manual";render();
+  },
+  dismiss(){const F=state.fly;F.shown=null;F.copy=null;getSelection().removeAllRanges();render()},
+  retry(){flyLoad()},
+  revoke(a){
+    const id=a.dataset.id,F=state.fly;
+    dbConfirm("fly:revoke:"+id,async()=>{
+      state.confirming=null;F.busy="revoke:"+id;flySay(null);render();
+      try{await api(`/fly/tokens/${encodeURIComponent(id)}/revoke`,{method:"POST"});flySay("Token revoked.");}catch(e){flySay(flyDaemon(e.message),true)}
+      F.busy=null;await flyRefresh();render();
+    });
+  },
+};
+function flyScreen(){
+  const F=state.fly,opt=(v,l,cur)=>`<option value="${esc(v)}" ${v===cur?"selected":""}>${esc(l)}</option>`;
+  const q=F.filter.trim().toLowerCase(),orgs=(F.orgs||[]).filter(o=>!q||o.slug.includes(q)||o.name.toLowerCase().includes(q));
+  const live=F.tokens.filter(t=>left(t.expires_at)),dis=F.busy||F.shown?"disabled":"";
+  const lifeLabel=(F.lifetimes.find(l=>l.id===F.lifetime)||{}).label||F.lifetime;
+  let list;
+  if(F.orgs===null)list=`<div class="empty" data-key="fwait">Asking fly for your organizations…</div>`;
+  else if(F.err)list="";
+  else if(!F.orgs.length)list=`<div class="empty" data-key="fnone">This fly login has no organizations.</div>`;
+  else if(!orgs.length)list=`<div class="empty" data-key="fnomatch">No organization matches.</div>`;
+  else list=`<div class="flyorgs" data-key="forgs">${orgs.map(o=>`<div class="flyorg" data-key="o-${esc(o.slug)}"><span class="connmain"><span class="connname">${esc(o.name)}</span>${o.name!==o.slug?`<code class="connmeta">${esc(o.slug)}</code>`:""}</span><button class="act" data-fly="create" data-org="${esc(o.slug)}" ${dis}>${F.busy===o.slug?"Creating…":"Create and copy"}</button></div>`).join("")}</div>`;
+  return `<header data-key="fh"><h1>Fly tokens</h1></header>
+  <div class="sub" data-key="fsub">Creates a token with your Mac's fly login and copies it for you to paste. Nothing puts it in a VM, and it isn't stored. ${F.type==="org"?"An org token reaches every app in that org.":"A read-only token can read everything in that org."}</div>
+  ${F.err?`<div class="banner bad row-b" data-key="fe" role="alert"><span>${esc(F.err)}</span><span class="spacer"></span><button class="act" data-fly="retry" ${F.loading?"disabled":""}>Check again</button></div>`:""}
+  ${F.note?`<div class="banner ${F.note.bad?"bad":"good"}" data-key="fn" role="status">${esc(F.note.text)}</div>`:""}
+  ${F.shown?`<div class="csbox" data-key="fshown"><div class="banner" role="alert">Couldn't copy this automatically. ${esc(F.shown.what)}, expires at ${flyTime(F.shown.expires)}. It's shown only once.</div><div class="cslabel"><span>Token</span><span class="spacer"></span>${F.copy==="ok"?`<span class="copied" role="status">Copied</span>`:""}<button class="act" data-fly="copy">Copy</button><button class="act" data-fly="dismiss">Dismiss</button></div><code class="block sel" id="flytok" tabindex="0">${esc(F.shown.token)}</code>${F.copy==="manual"?`<div class="status deny" role="status">The app couldn't reach the clipboard. The token is selected: press Command-C.</div>`:""}</div>`:""}
+  <div class="flybar" data-key="fbar">
+    <label class="fld"><span>Valid for</span><select data-flyf="lifetime">${(F.lifetimes.length?F.lifetimes:[{id:F.lifetime,label:lifeLabel}]).map(l=>opt(l.id,l.label,F.lifetime)).join("")}</select></label>
+    <label class="fld"><span>Type</span><select data-flyf="type">${opt("org","Org",F.type)}${opt("readonly","Read-only",F.type)}</select></label>
+    ${(F.orgs||[]).length>5?`<label class="fld grow"><span>Filter</span><input ${inputAttrs} data-flyf="filter" value="${esc(F.filter)}" placeholder="Organization"></label>`:""}
+  </div>
+  ${list}
+  <h3 data-key="fth">Created here</h3>
+  ${live.length?`<table data-key="ftok"><thead><tr><th>Org</th><th>Type</th><th>Created</th><th>Time left</th><th></th></tr></thead><tbody>${live.slice().reverse().map(t=>{const k="fly:revoke:"+t.id,arm=state.confirming===k;return `<tr data-key="t-${esc(t.id)}"><td><b>${esc(t.org)}</b></td><td>${esc(flyTypeLabel[t.type]||t.type)}</td><td class="time">${when(t.created_at)}</td><td class="time">${esc(left(t.expires_at))}</td><td class="num"><button class="act ${arm?"confirm":""}" data-fly="revoke" data-id="${esc(t.id)}" ${F.busy?"disabled":""}>${F.busy==="revoke:"+t.id?"Revoking…":arm?"Click again to revoke":"Revoke"}</button></td></tr>`}).join("")}</tbody></table>`:`<div class="hint" data-key="fnotok">Tokens you create here are listed until they expire. Their values aren't kept.</div>`}`;
 }
 // New sandbox. The questions and their order follow `colimander setup`; the daemon
 // repeats every check when the job is created. Tokens stay out of the DOM's
@@ -560,7 +660,7 @@ function wizPage(){
     }
     case "services":return `<h2>Fly.io and Doppler</h2><div class="hint">Optional. Tokens go only to the daemon, are stored encrypted in its vault, and the VM never sees them.</div>
       <h3 data-key="fh">Fly.io</h3>${wcheck("enable_fly","Enable fly.io API brokering. Lets the agent call a small allowlist of fly endpoints (app status, log streaming) through the broker.")}
-      ${f.enable_fly?`<div data-key="ff">${wfield("fly_token","Fly upstream token",{secret:true,hint:"Create a scoped one with <code>fly tokens create deploy -a &lt;app&gt;</code> or <code>fly tokens create org-read-only -o &lt;org&gt;</code>."})}${wfield("fly_apps","Allowed fly app names",{hint:"Separate with commas. Blank allows every app the token can see, and endpoints stay read-only plus logs."})}</div>`:""}
+      ${f.enable_fly?`<div data-key="ff">${wfield("fly_token","Fly upstream token",{secret:true,hint:"Create a scoped one with <code>fly tokens create deploy -a &lt;app&gt;</code> or <code>fly tokens create readonly -o &lt;org&gt;</code>."})}${wfield("fly_apps","Allowed fly app names",{hint:"Separate with commas. Blank allows every app the token can see, and endpoints stay read-only plus logs."})}</div>`:""}
       <h3 data-key="dh">Doppler</h3>${wcheck("enable_doppler","Enable Doppler secrets brokering. Lets the agent add secrets to listed projects. Reads and deletes are denied by default.")}
       ${f.enable_doppler?`<div data-key="df">${wfield("doppler_token","Doppler upstream token",{secret:true,hint:"Create a service token at dashboard.doppler.com. Scope it to one project and config for least privilege."})}${wfield("doppler_projects","Allowed Doppler project names",{hint:"Separate with commas. The broker refuses requests for a project outside this list."})}</div>`:""}`;
     case "broker":return `<h2>Broker and monitoring</h2>
@@ -644,6 +744,7 @@ function jobScreen(j){
     ${btns?`<div class="btns" data-key="jb">${btns}</div>`:""}</div>`;
 }
 document.addEventListener("input",e=>{
+  if(e.target.dataset.flyf){state.fly[e.target.dataset.flyf]=e.target.value;render();return}
   if(wizInput(e.target))return;
   const t=e.target,f=state.dbf;if(!f)return;const d=t.dataset;
   if(d.f){f[d.f]=t.type==="checkbox"?t.checked:t.value;if(t.type==="checkbox")render()}
@@ -654,11 +755,13 @@ document.addEventListener("submit",e=>{e.preventDefault();if(e.target.dataset.wi
 document.addEventListener("click",e=>{
   if(e.target.closest(".sb")){state.setupView=null;state.confirming=null}
   if(e.target.closest("#newsb")){openWizard();return}
+  const fl=e.target.closest("[data-fly]");if(fl){if(!fl.disabled)flyActs[fl.dataset.fly](fl);return}
   const jb=e.target.closest("[data-job]");if(jb){openJob(jb.dataset.job);return}
   const wz=e.target.closest("[data-wz]");if(wz){if(!wz.disabled)wizActs[wz.dataset.wz](wz);return}
   if(e.target.closest("#dbnav")){state.showOther=false;if(state.pending.length&&!state.dbf)state.dbTab="approvals";showDB(true);return}
   const d=e.target.closest("[data-db]");if(d){if(!d.disabled)dbActs[d.dataset.db](d);return}
   const dt=e.target.closest("[data-dbtab]");if(dt){dbGo(dt.dataset.dbtab);return}
+  if(e.target.closest("#flynav")){state.showOther="fly";state.db&&showDB(false);document.getElementById("main").scrollTop=0;flyLoad();return}
   if(e.target.closest("#othernav")){state.showOther=true;state.db&&showDB(false);render();return}
   const sb=e.target.closest(".sb");if(sb){state.showOther=false;state.db&&showDB(false);state.selected=sb.dataset.name;state.confirming=null;state.egress=[];state.events=[];render();refresh();return}
   const tab=e.target.closest("[data-tab]");if(tab){state.tab=tab.dataset.tab;render();return}

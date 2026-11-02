@@ -589,7 +589,7 @@ func cmdSetup(args []string) error {
 		huh.NewGroup(
 			huh.NewInput().
 				Title("Fly upstream token").
-				Description("Create a scoped one with `fly tokens create deploy -a <app>` or `fly tokens create org-read-only -o <org>`. Stored encrypted in ~/.colimander/vault.db.").
+				Description("Create a scoped one with `fly tokens create deploy -a <app>` or `fly tokens create readonly -o <org>`. Stored encrypted in ~/.colimander/vault.db.").
 				EchoMode(huh.EchoModePassword).
 				Value(&req.FlyToken).
 				Validate(sandbox.ValidateNonEmpty),

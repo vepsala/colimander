@@ -102,3 +102,27 @@ func TestPageIsNativeAndHasNoBlockedDialogs(t *testing.T) {
 		}
 	}
 }
+
+func TestCopyHandlerOnlyClaimsWhatItVerified(t *testing.T) {
+	var clip string
+	set := func(s string) error { clip = s; return nil }
+	get := func() (string, error) { return clip, nil }
+	run := func(h http.Handler, body string) (int, string) {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("POST", "/native/copy", strings.NewReader(body)))
+		return w.Code, w.Body.String()
+	}
+	if code, body := run(CopyHandler(set, get), "secret"); code != 200 || !strings.Contains(body, "true") || clip != "secret" {
+		t.Errorf("ok: %d %s", code, body)
+	}
+	wrong := func() (string, error) { return "something else", nil }
+	if code, body := run(CopyHandler(set, wrong), "secret"); code == 200 || !strings.Contains(body, "false") || strings.Contains(body, "secret") {
+		t.Errorf("read-back mismatch: %d %s", code, body)
+	}
+	if code, body := run(CopyHandler(func(string) error { return os.ErrPermission }, get), "secret"); code == 200 || strings.Contains(body, "secret") {
+		t.Errorf("set failed: %d %s", code, body)
+	}
+	if code, _ := run(CopyHandler(set, get), ""); code == 200 {
+		t.Error("empty body claimed success")
+	}
+}

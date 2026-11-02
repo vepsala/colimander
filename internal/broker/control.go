@@ -105,6 +105,7 @@ func (b *broker) controlHandler() http.Handler {
 		writeJSON(w, map[string]any{"name": name, "suspended_reason": SuspendedReason(name)})
 	})
 	b.setupRoutes(mux)
+	b.flyTokenRoutes(mux)
 	return mux
 }
 
