@@ -15,6 +15,10 @@ admin_listen: "127.0.0.1:6480"
 # Path to the SQLite registry file (created on first run).
 database: "pgproxy.db"
 
+# Key that encrypts secrets in the registry, generated on first start. Defaults
+# to master.key beside the database. Don't back it up with the database.
+# master_key_file: "master.key"
+
 # Secret salt mixed into every PII hash. Set a stable, random value; changing
 # it changes all hashes.
 hash_salt: "set-a-random-salt-here"

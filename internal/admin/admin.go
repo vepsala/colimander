@@ -80,6 +80,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/connections/{id}/rotate", s.requireAuth(s.handleRotate))
 	mux.Handle("POST /api/connections/{id}/detect-pii", s.requireAuth(s.handleDetectPIIForConn))
 	mux.Handle("DELETE /api/connections/{id}", s.requireAuth(s.handleDelete))
+	mux.Handle("POST /api/connections/{id}/resume", s.requireAuth(s.handleResume))
+	mux.Handle("GET /api/security-events", s.requireAuth(s.handleSecurityEvents))
 	mux.Handle("GET /api/approvals", s.requireAuth(s.handleApprovals))
 	mux.Handle("POST /api/approvals/{id}", s.requireAuth(s.handleDecide))
 	return mux
@@ -208,6 +210,10 @@ type connectionDTO struct {
 	RotatedAt        time.Time  `json:"rotated_at"`
 	NextRotationAt   *time.Time `json:"next_rotation_at,omitempty"`
 	ConnectionString string     `json:"connection_string"`
+	StrictAll        bool       `json:"strict_all"`
+	SafeRelations    []string   `json:"safe_relations"`
+	SuspendedAt      *time.Time `json:"suspended_at,omitempty"`
+	SuspendReason    string     `json:"suspend_reason,omitempty"`
 }
 
 func (s *Server) toDTO(c store.Connection) connectionDTO {
@@ -229,7 +235,16 @@ func (s *Server) toDTO(c store.Connection) connectionDTO {
 			nextRotation = &next
 		}
 	}
+	var suspendedAt *time.Time
+	if c.Suspended() {
+		suspendedAt = &c.SuspendedAt
+		cs = "" // the stored password no longer works
+	}
 	return connectionDTO{
+		StrictAll:        c.StrictAll,
+		SafeRelations:    c.SafeRelations,
+		SuspendedAt:      suspendedAt,
+		SuspendReason:    c.SuspendReason,
 		ID:               c.ID,
 		Name:             c.Name,
 		AgentUsername:    c.AgentUsername,
@@ -261,6 +276,8 @@ func (s *Server) handleList(w http.ResponseWriter, _ *http.Request) {
 }
 
 type createRequest struct {
+	StrictAll     *bool            `json:"strict_all"`
+	SafeRelations []string         `json:"safe_relations"`
 	Name          string           `json:"name"`
 	UpstreamURL   string           `json:"upstream_url"`
 	MaxRows       *int             `json:"max_rows"`
@@ -289,6 +306,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		MaxRows:       1000,
 		GateMutations: true,
 		PIIRules:      req.PIIRules,
+		SafeRelations: req.SafeRelations,
+	}
+	if req.StrictAll != nil {
+		in.StrictAll = *req.StrictAll
 	}
 	if req.MaxRows != nil {
 		in.MaxRows = *req.MaxRows
@@ -379,6 +400,12 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 			in.RotateEvery = d
 		}
 	}
+	// A present strict_all means "change the strictness settings".
+	if req.StrictAll != nil {
+		in.SetStrict = true
+		in.StrictAll = *req.StrictAll
+		in.SafeRelations = req.SafeRelations
+	}
 	if err := s.store.Update(id, in); err != nil {
 		s.writeStoreError(w, err)
 		return
@@ -410,6 +437,46 @@ func (s *Server) handleRotate(w http.ResponseWriter, r *http.Request) {
 		"agent_password":    password,
 		"connection_string": s.connString(username, password),
 	})
+}
+
+// handleResume reactivates a suspended connection with a new password. The old
+// one is assumed compromised, so the agent's environment needs the new string.
+func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid id"))
+		return
+	}
+	password, err := s.store.Resume(id)
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	conns, _ := s.store.List()
+	var username string
+	for _, c := range conns {
+		if c.ID == id {
+			username = c.AgentUsername
+		}
+	}
+	if err := s.store.AddSecurityEvent(id, username, store.EventResumed, "resumed from the admin UI; password rotated", ""); err != nil {
+		s.log.Error("could not record security event", "err", err)
+	}
+	s.log.Warn("suspended connection resumed", "id", id)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"agent_password":    password,
+		"connection_string": s.connString(username, password),
+	})
+}
+
+// handleSecurityEvents lists recent security events, newest first.
+func (s *Server) handleSecurityEvents(w http.ResponseWriter, _ *http.Request) {
+	events, err := s.store.SecurityEvents(100)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, events)
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {

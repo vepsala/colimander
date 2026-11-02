@@ -8,6 +8,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,6 +26,11 @@ type Config struct {
 
 	// Database is the path to the SQLite registry file.
 	Database string `yaml:"database"`
+
+	// MasterKeyFile holds the key that encrypts secrets in the registry. It is
+	// generated on first start. Defaults to master.key beside Database. Losing
+	// it means re-entering upstream credentials and rotating agent passwords.
+	MasterKeyFile string `yaml:"master_key_file"`
 
 	// PublicAddr is the host:port shown in agent connection strings (e.g.
 	// "proxy.example.com:5432"). Defaults to Listen. Set this when the
@@ -127,6 +133,7 @@ func (c *Config) applyEnv() error {
 	setString(&c.Listen, "PGPROXY_LISTEN")
 	setString(&c.AdminListen, "PGPROXY_ADMIN_LISTEN")
 	setString(&c.Database, "PGPROXY_DATABASE")
+	setString(&c.MasterKeyFile, "PGPROXY_MASTER_KEY_FILE")
 	setString(&c.PublicAddr, "PGPROXY_PUBLIC_ADDR")
 	setString(&c.HashSalt, "PGPROXY_HASH_SALT")
 	setString(&c.RedactString, "PGPROXY_REDACT_STRING")
@@ -181,6 +188,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Database == "" {
 		c.Database = "pgproxy.db"
+	}
+	if c.MasterKeyFile == "" {
+		c.MasterKeyFile = filepath.Join(filepath.Dir(c.Database), "master.key")
 	}
 	if c.SchemaFunction == "" {
 		c.SchemaFunction = "pgproxy_schema"

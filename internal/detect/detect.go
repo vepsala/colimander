@@ -1,4 +1,7 @@
-// Package detect provides best-effort PII discovery: it introspects a
+// Package detect suggests PII rules for a person to review. Nothing is masked
+// because of a suggestion, only once it's saved as a rule.
+//
+// It provides best-effort PII discovery: it introspects a
 // database's schema and flags columns whose names suggest personal data. It is
 // a heuristic (name matching only) — every result must be reviewed by a human.
 package detect
@@ -10,32 +13,36 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// nameHints maps a substring found in a column name to a suggested action.
-// "redact" is suggested for high-sensitivity secrets; "hash" for identifiers
-// you may still want to compare for equality.
-var nameHints = []struct {
-	substr string
-	action string
-}{
-	{"password", "redact"}, {"passwd", "redact"}, {"secret", "redact"},
-	{"token", "redact"}, {"api_key", "redact"}, {"apikey", "redact"},
-	{"private_key", "redact"}, {"card", "redact"}, {"cvv", "redact"},
-	{"iban", "hash"}, {"account_number", "hash"}, {"ssn", "hash"},
-	{"social_security", "hash"}, {"national_id", "hash"}, {"passport", "hash"},
-	{"email", "hash"}, {"phone", "hash"}, {"mobile", "hash"}, {"msisdn", "hash"},
-	{"address", "hash"}, {"street", "hash"}, {"postal", "hash"}, {"zip", "hash"},
-	{"first_name", "hash"}, {"last_name", "hash"}, {"full_name", "hash"},
-	{"birth", "hash"}, {"dob", "hash"}, {"date_of_birth", "hash"},
-	{"rekkari", "hash"}, {"license_plate", "hash"}, {"reg_number", "hash"},
+// hints are substrings of column names that suggest personal data or secrets.
+var hints = []string{
+	"password", "passwd", "secret", "token", "api_key", "apikey", "private_key",
+	"card", "cvv", "iban", "account_number", "ssn", "social_security",
+	"national_id", "passport", "hetu", "henkilotunnus", "email", "phone", "mobile",
+	"msisdn", "address", "street", "postal", "zip", "first_name", "last_name",
+	"full_name", "customer_name", "contact", "birth", "dob", "date_of_birth",
+	"rekkari", "license_plate", "reg_number",
+	// Free text: a scanner can't reliably spot a person's name in these.
+	"comment", "message", "description", "remark",
+}
+
+// exactHints are too short or common to match as substrings.
+var exactHints = map[string]bool{
+	"name": true, "surname": true, "note": true, "notes": true, "body": true,
+	"bio": true, "content": true, "text": true, "memo": true, "subject": true,
 }
 
 // SuggestAction returns a suggested anonymization action for a column name, and
-// whether the name matched any heuristic at all.
+// whether the name matched any heuristic at all. It always suggests "redact": a
+// hash is generally still personal data under GDPR, so hashing should be a
+// deliberate choice.
 func SuggestAction(columnName string) (string, bool) {
 	lower := strings.ToLower(columnName)
-	for _, h := range nameHints {
-		if strings.Contains(lower, h.substr) {
-			return h.action, true
+	if exactHints[lower] {
+		return "redact", true
+	}
+	for _, h := range hints {
+		if strings.Contains(lower, h) {
+			return "redact", true
 		}
 	}
 	return "", false

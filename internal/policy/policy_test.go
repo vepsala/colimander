@@ -17,11 +17,12 @@ func testPolicy() *Policy {
 func TestActionFor(t *testing.T) {
 	p := testPolicy()
 	cases := map[string]Action{
-		"email": ActionHash,
-		"EMAIL": ActionHash, // case-insensitive
-		"ssn":   ActionRedact,
-		"phone": ActionHash, // table-qualified rule still matches by name
-		"name":  ActionNone,
+		"email":            ActionHash,
+		"EMAIL":            ActionHash, // case-insensitive
+		"ssn":              ActionRedact,
+		"phone":            ActionHash, // table-qualified rule still matches by name
+		"sku":              ActionNone,
+		"customer_email_2": ActionNone, // detection only suggests; it never masks
 	}
 	for col, want := range cases {
 		if got := p.ActionFor(col); got != want {

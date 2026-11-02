@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -18,7 +19,7 @@ import (
 // runConnections handles the `connections` subcommands.
 func runConnections(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: pg-agent-proxy connections add|list|rotate|rm [flags]")
+		fmt.Fprintln(os.Stderr, "usage: pg-agent-proxy connections add|list|rotate|resume|rm [flags]")
 		os.Exit(2)
 	}
 	sub, rest := args[0], args[1:]
@@ -29,6 +30,8 @@ func runConnections(args []string) {
 		connList(rest)
 	case "rotate":
 		connRotate(rest)
+	case "resume":
+		connResume(rest)
 	case "rm", "delete":
 		connRemove(rest)
 	default:
@@ -43,13 +46,16 @@ func openStore(cfgPath string) (*store.Store, *config.Config) {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
 		os.Exit(1)
 	}
-	st, err := store.Open(cfg.Database)
+	st, err := store.Open(store.Options{
+		Path:          cfg.Database,
+		MasterKeyFile: cfg.MasterKeyFile,
+		LegacySecret:  os.Getenv("PGPROXY_ADMIN_TOKEN"),
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open registry failed:", err)
 		os.Exit(1)
 	}
-	// Same key the server uses, so `connections list` can decrypt passwords.
-	st.UseSecret(os.Getenv("PGPROXY_ADMIN_TOKEN"))
+	logStartup(slog.New(slog.NewTextHandler(os.Stderr, nil)), st.Startup(), cfg.MasterKeyFile)
 	return st, cfg
 }
 
@@ -62,6 +68,8 @@ func connAdd(args []string) {
 	gate := fs.Bool("gate", true, "require approval for mutations")
 	piiSpec := fs.String("pii", "", "comma-separated PII rules, e.g. email:hash,ssn:redact,phone:hash")
 	rotateEvery := fs.Duration("rotate-every", 0, "rotate the agent password automatically at this interval, e.g. 8h (0 = never)")
+	strictAll := fs.Bool("strict-all", false, "treat every table as holding PII until listed in -safe (recommended for production)")
+	safe := fs.String("safe", "", "comma-separated tables and views reviewed as holding no PII")
 	_ = fs.Parse(args)
 
 	if *name == "" || *upstream == "" {
@@ -83,6 +91,8 @@ func connAdd(args []string) {
 		GateMutations: *gate,
 		PIIRules:      parsePII(*piiSpec),
 		RotateEvery:   *rotateEvery,
+		StrictAll:     *strictAll,
+		SafeRelations: splitList(*safe),
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "create failed:", err)
@@ -130,6 +140,44 @@ func connList(args []string) {
 		fmt.Fprintf(tw, "%d\t%s\t%s\t%d\t%v\t%s\t%s\t%s\n", c.ID, c.Name, c.AgentUsername, c.MaxRows, c.GateMutations, strings.Join(rules, ","), rotateEvery, nextRotation)
 	}
 	_ = tw.Flush()
+}
+
+// splitList parses a comma-separated flag value.
+func splitList(s string) []string {
+	out := []string{}
+	for _, item := range strings.Split(s, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// connResume reactivates a suspended connection with a new password.
+func connResume(args []string) {
+	fs := flag.NewFlagSet("connections resume", flag.ExitOnError)
+	cfgPath := fs.String("config", "config.yaml", "config file")
+	id := fs.Int64("id", 0, "connection id (required)")
+	_ = fs.Parse(args)
+
+	st, cfg := openStore(*cfgPath)
+	defer st.Close()
+
+	password, err := st.Resume(*id)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "resume failed:", err)
+		os.Exit(1)
+	}
+	conns, _ := st.List()
+	username := ""
+	for _, c := range conns {
+		if c.ID == *id {
+			username = c.AgentUsername
+		}
+	}
+	_ = st.AddSecurityEvent(*id, username, store.EventResumed, "resumed from the CLI; password rotated", "")
+	fmt.Println("Resumed. New connection string (password shown only once):")
+	fmt.Println("  " + connString(cfg, username, password))
 }
 
 func connRotate(args []string) {

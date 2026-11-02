@@ -8,16 +8,20 @@ func TestSuggestAction(t *testing.T) {
 		wantAction string
 		wantMatch  bool
 	}{
-		{"email", "hash", true},
-		{"user_email", "hash", true}, // substring match
-		{"EmailAddress", "hash", true},
-		{"phone", "hash", true},
-		{"full_name", "hash", true},
+		{"email", "redact", true},
+		{"user_email", "redact", true}, // substring match
+		{"EmailAddress", "redact", true},
+		{"phone", "redact", true},
+		{"full_name", "redact", true},
 		{"password_hash", "redact", true}, // "password" wins (redact)
 		{"api_key", "redact", true},
 		{"card_number", "redact", true},
-		{"ssn", "hash", true},
+		{"ssn", "redact", true},
+		{"notes", "redact", true},
+		{"name", "redact", true},
+		{"message_body", "redact", true},
 		{"id", "", false},
+		{"username", "", false},
 		{"amount", "", false},
 		{"created_at", "", false},
 	}

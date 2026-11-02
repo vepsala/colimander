@@ -13,9 +13,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/crypto/bcrypt"
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no cgo)
 
@@ -27,14 +30,19 @@ var ErrNotFound = errors.New("connection not found")
 
 // Connection is a registered proxy connection.
 type Connection struct {
-	ID            int64            `json:"id"`
-	Name          string           `json:"name"`
-	AgentUsername string           `json:"agent_username"`
-	UpstreamURL   string           `json:"upstream_url"`
-	MaxRows       int              `json:"max_rows"`
-	GateMutations bool             `json:"gate_mutations"`
-	PIIRules      []policy.PIIRule `json:"pii_rules"`
-	CreatedAt     time.Time        `json:"created_at"`
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	AgentUsername string `json:"agent_username"`
+	// UpstreamURL is the decrypted connection string, including its password.
+	// List leaves it empty when the stored ciphertext can't be decrypted.
+	UpstreamURL string `json:"upstream_url"`
+	// UpstreamTarget is "user@host:port/database", stored unencrypted so a
+	// connection stays identifiable without its secrets. Empty if unparseable.
+	UpstreamTarget string           `json:"upstream_target,omitempty"`
+	MaxRows        int              `json:"max_rows"`
+	GateMutations  bool             `json:"gate_mutations"`
+	PIIRules       []policy.PIIRule `json:"pii_rules"`
+	CreatedAt      time.Time        `json:"created_at"`
 	// ExpiresAt is when the connection stops working and becomes eligible for
 	// sweeping. The zero value means the connection never expires.
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
@@ -45,13 +53,24 @@ type Connection struct {
 	// rotation (manual or automatic).
 	RotatedAt time.Time `json:"rotated_at"`
 	// AgentPassword is the plaintext agent password, decrypted for display.
-	// It is empty when no secret is set or when the stored ciphertext can no
-	// longer be decrypted (e.g. the admin token was rotated) — rotate the
-	// connection to mint a fresh, displayable password.
+	// It is empty when the stored ciphertext can't be decrypted or was cleared
+	// during migration — rotate the connection to mint a displayable password.
 	AgentPassword string `json:"agent_password,omitempty"`
+	// StrictAll treats every table as holding PII unless listed in SafeRelations.
+	StrictAll bool `json:"strict_all"`
+	// SafeRelations are tables and views reviewed as holding no PII.
+	SafeRelations []string `json:"safe_relations"`
+	// SuspendedAt is when the tripwire stopped this connection. While set, it
+	// can't authenticate. The zero value means it's active.
+	SuspendedAt time.Time `json:"suspended_at,omitempty"`
+	// SuspendReason says what tripped it.
+	SuspendReason string `json:"suspend_reason,omitempty"`
 
 	passwordHash string
 }
+
+// Suspended reports whether the tripwire has stopped this connection.
+func (c *Connection) Suspended() bool { return !c.SuspendedAt.IsZero() }
 
 // Expired reports whether the connection has a deadline that has passed.
 func (c *Connection) Expired(now time.Time) bool {
@@ -80,77 +99,323 @@ type CreateInput struct {
 	// RotateEvery, when positive, makes the sweeper rotate the password every
 	// interval (see RotateDue). Zero means manual rotation only.
 	RotateEvery time.Duration
+	// StrictAll and SafeRelations: see Connection.
+	StrictAll     bool
+	SafeRelations []string
+}
+
+// Options configures Open.
+type Options struct {
+	// Path is the SQLite registry file.
+	Path string
+	// MasterKeyFile holds the key that encrypts secrets in the registry. It is
+	// generated on first use.
+	MasterKeyFile string
+	// LegacySecret is the admin token that encrypted agent passwords before the
+	// master key existed. It is only read while migrating an older registry.
+	LegacySecret string
+}
+
+// StartupReport describes what Open did, for the caller to surface.
+type StartupReport struct {
+	KeyCreated bool // a new master key was generated
+	PermsFixed bool // the key file was too open and has been restricted
+	// BackupExcludeErr is set when the new key couldn't be excluded from backups.
+	BackupExcludeErr error
+	// Migrated counts older rows whose secrets were encrypted under the master key.
+	Migrated int
+	// PasswordsCleared counts agent passwords that couldn't be carried over.
+	// Those credentials still authenticate but can't be displayed until rotated.
+	PasswordsCleared int
+	// ScrubPending means old plaintext could not yet be purged from the database
+	// files, usually because another process had them open. Open retries it.
+	ScrubPending bool
 }
 
 // Store wraps the SQLite database.
 type Store struct {
-	db   *sql.DB
-	aead cipher.AEAD // nil when no secret is set; gates password encryption
+	db     *sql.DB
+	aead   cipher.AEAD
+	report StartupReport
 }
 
-// UseSecret derives a symmetric key from secret (the admin token) and uses it
-// to encrypt agent passwords at rest. Pass "" to disable storage of
-// re-displayable passwords. Rotating the secret renders previously stored
-// passwords undecryptable — by design, they become unrecoverable.
-func (s *Store) UseSecret(secret string) {
-	if secret == "" {
-		s.aead = nil
-		return
-	}
-	sum := sha256.Sum256([]byte("pgproxy:agent-password:v1:" + secret))
-	block, err := aes.NewCipher(sum[:]) // 32-byte key → AES-256
+// Startup reports what Open did.
+func (s *Store) Startup() StartupReport { return s.report }
+
+const (
+	// sealedPrefix marks values encrypted under the master key.
+	sealedPrefix = "v2:"
+	// keyCheckPlaintext is sealed into the meta table to detect a wrong key.
+	keyCheckPlaintext = "pgproxy-key-check"
+
+	fieldUpstream = "upstream_url"
+	fieldPassword = "agent_password"
+	fieldKeyCheck = "key_check"
+	fieldEvent    = "event_query"
+
+	metaKeyCheck     = "key_check"
+	metaScrubPending = "scrub_pending"
+)
+
+func newAEAD(key []byte) (cipher.AEAD, error) {
+	block, err := aes.NewCipher(key)
 	if err != nil {
-		s.aead = nil
-		return
+		return nil, err
 	}
-	s.aead, _ = cipher.NewGCM(block)
+	return cipher.NewGCM(block)
 }
 
-// encrypt seals plaintext as base64(nonce||ciphertext). Returns "" when no
-// secret is set or plaintext is empty.
-func (s *Store) encrypt(plaintext string) (string, error) {
-	if s.aead == nil || plaintext == "" {
+// binding is the AES-GCM additional data. It ties a ciphertext to its field and
+// connection, so someone able to edit the database can't move a value elsewhere.
+func binding(field, username string) []byte {
+	return []byte("pgproxy:v2:" + field + ":" + username)
+}
+
+// seal encrypts plaintext as "v2:" + base64(nonce||ciphertext). An empty
+// plaintext stays empty.
+func (s *Store) seal(plaintext, field, username string) (string, error) {
+	if plaintext == "" {
 		return "", nil
 	}
-	nonce := make([]byte, s.aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
+	nonce, err := randomBytes(s.aead.NonceSize())
+	if err != nil {
 		return "", err
 	}
-	sealed := s.aead.Seal(nonce, nonce, []byte(plaintext), nil)
-	return base64.RawStdEncoding.EncodeToString(sealed), nil
+	sealed := s.aead.Seal(nonce, nonce, []byte(plaintext), binding(field, username))
+	return sealedPrefix + base64.RawStdEncoding.EncodeToString(sealed), nil
 }
 
-// decrypt reverses encrypt. Returns "" if the secret is absent or the
-// ciphertext can no longer be authenticated (e.g. the admin token changed).
-func (s *Store) decrypt(enc string) string {
-	if s.aead == nil || enc == "" {
+// unseal reverses seal.
+func (s *Store) unseal(enc, field, username string) (string, error) {
+	if enc == "" {
+		return "", nil
+	}
+	if !strings.HasPrefix(enc, sealedPrefix) {
+		return "", errors.New("value is not sealed")
+	}
+	raw, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(enc, sealedPrefix))
+	if err != nil || len(raw) < s.aead.NonceSize() {
+		return "", errors.New("malformed ciphertext")
+	}
+	nonce, ct := raw[:s.aead.NonceSize()], raw[s.aead.NonceSize():]
+	pt, err := s.aead.Open(nil, nonce, ct, binding(field, username))
+	if err != nil {
+		return "", err
+	}
+	return string(pt), nil
+}
+
+// Open opens the registry, loading or creating the master key and encrypting
+// any secrets left in plaintext by an older version.
+func Open(opts Options) (*Store, error) {
+	if opts.MasterKeyFile == "" {
+		return nil, errors.New("store: MasterKeyFile is required")
+	}
+	db, err := sql.Open("sqlite", opts.Path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=secure_delete(1)")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1) // SQLite is single-writer; serialize to avoid lock errors.
+	s := &Store{db: db}
+	err = s.migrate()
+	if err == nil {
+		err = s.initKey(opts.MasterKeyFile)
+	}
+	if err == nil {
+		err = s.encryptLegacyRows(opts.LegacySecret)
+	}
+	if err == nil {
+		err = s.scrubIfPending()
+	}
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// initKey loads or creates the master key and checks it against the registry.
+func (s *Store) initKey(path string) error {
+	check, err := s.metaGet(metaKeyCheck)
+	if err != nil {
+		return err
+	}
+	key, permsFixed, err := loadMasterKey(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		if check != "" {
+			return fmt.Errorf("%w: %s", ErrMasterKeyMissing, path)
+		}
+		if key, err = createMasterKey(path); err != nil {
+			return err
+		}
+		s.report.KeyCreated = true
+		s.report.BackupExcludeErr = excludeFromBackup(path)
+	case err != nil:
+		return err
+	}
+	s.report.PermsFixed = permsFixed
+
+	if s.aead, err = newAEAD(key); err != nil {
+		return err
+	}
+	if check != "" {
+		if _, err := s.unseal(check, fieldKeyCheck, ""); err != nil {
+			return fmt.Errorf("%w: %s", ErrMasterKeyWrong, path)
+		}
+		return nil
+	}
+	check, err = s.seal(keyCheckPlaintext, fieldKeyCheck, "")
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)`, metaKeyCheck, check)
+	return err
+}
+
+// encryptLegacyRows moves secrets written by older versions under the master
+// key in one transaction, then flags the old plaintext for scrubbing.
+func (s *Store) encryptLegacyRows(legacySecret string) error {
+	var legacy cipher.AEAD
+	if legacySecret != "" {
+		sum := sha256.Sum256([]byte("pgproxy:agent-password:v1:" + legacySecret))
+		var err error
+		if legacy, err = newAEAD(sum[:]); err != nil {
+			return err
+		}
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`
+SELECT id, agent_username, upstream_url, agent_password_enc FROM connections
+WHERE upstream_url != '' OR (agent_password_enc != '' AND agent_password_enc NOT LIKE 'v2:%')`)
+	if err != nil {
+		return err
+	}
+	type legacyRow struct {
+		id                 int64
+		username, url, enc string
+	}
+	var pending []legacyRow
+	for rows.Next() {
+		var r legacyRow
+		if err := rows.Scan(&r.id, &r.username, &r.url, &r.enc); err != nil {
+			rows.Close()
+			return err
+		}
+		pending = append(pending, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if len(pending) == 0 {
+		return nil
+	}
+
+	for _, r := range pending {
+		upstreamEnc, err := s.seal(r.url, fieldUpstream, r.username)
+		if err != nil {
+			return err
+		}
+		passwordEnc := r.enc
+		if !strings.HasPrefix(r.enc, sealedPrefix) {
+			password := openLegacyPassword(legacy, r.enc)
+			if password == "" && r.enc != "" {
+				s.report.PasswordsCleared++
+			}
+			if passwordEnc, err = s.seal(password, fieldPassword, r.username); err != nil {
+				return err
+			}
+		}
+		query := `UPDATE connections SET agent_password_enc = ? WHERE id = ?`
+		args := []any{passwordEnc, r.id}
+		if r.url != "" {
+			query = `UPDATE connections SET upstream_url = '', upstream_enc = ?, upstream_target = ?, agent_password_enc = ? WHERE id = ?`
+			args = []any{upstreamEnc, upstreamTarget(r.url), passwordEnc, r.id}
+		}
+		if _, err := tx.Exec(query, args...); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, '1')`, metaScrubPending); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.report.Migrated = len(pending)
+	return nil
+}
+
+// openLegacyPassword decrypts a pre-master-key agent password, returning "" if
+// that isn't possible.
+func openLegacyPassword(legacy cipher.AEAD, enc string) string {
+	if legacy == nil || enc == "" {
 		return ""
 	}
 	raw, err := base64.RawStdEncoding.DecodeString(enc)
-	if err != nil || len(raw) < s.aead.NonceSize() {
+	if err != nil || len(raw) < legacy.NonceSize() {
 		return ""
 	}
-	nonce, ct := raw[:s.aead.NonceSize()], raw[s.aead.NonceSize():]
-	pt, err := s.aead.Open(nil, nonce, ct, nil)
+	pt, err := legacy.Open(nil, raw[:legacy.NonceSize()], raw[legacy.NonceSize():], nil)
 	if err != nil {
 		return ""
 	}
 	return string(pt)
 }
 
-// Open opens (and migrates) the registry at path.
-func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)")
+// scrubIfPending removes old plaintext from free pages and the WAL. The flag is
+// only cleared once that succeeds, so an interrupted scrub is retried.
+func (s *Store) scrubIfPending() error {
+	pending, err := s.metaGet(metaScrubPending)
+	if err != nil || pending == "" {
+		return err
+	}
+	if _, err := s.db.Exec(`VACUUM`); err != nil {
+		s.report.ScrubPending = true
+		return nil // the data is safe to use; retry on the next Open
+	}
+	if !s.checkpoint() {
+		s.report.ScrubPending = true
+		return nil
+	}
+	if _, err := s.db.Exec(`DELETE FROM meta WHERE key = ?`, metaScrubPending); err != nil {
+		return err
+	}
+	s.checkpoint()
+	return nil
+}
+
+// checkpoint flushes and truncates the WAL, reporting whether it fully did.
+func (s *Store) checkpoint() bool {
+	var busy, logFrames, checkpointed int
+	err := s.db.QueryRow(`PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &checkpointed)
+	return err == nil && busy == 0
+}
+
+func (s *Store) metaGet(key string) (string, error) {
+	var value string
+	err := s.db.QueryRow(`SELECT value FROM meta WHERE key = ?`, key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return value, err
+}
+
+// upstreamTarget renders a connection string without its password.
+func upstreamTarget(connString string) string {
+	cfg, err := pgconn.ParseConfig(connString)
 	if err != nil {
-		return nil, err
+		return ""
 	}
-	db.SetMaxOpenConns(1) // SQLite is single-writer; serialize to avoid lock errors.
-	s := &Store{db: db}
-	if err := s.migrate(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return s, nil
+	return cfg.User + "@" + cfg.Host + ":" + strconv.Itoa(int(cfg.Port)) + "/" + cfg.Database
 }
 
 // Close closes the underlying database.
@@ -164,7 +429,9 @@ CREATE TABLE IF NOT EXISTS connections (
   agent_username      TEXT    NOT NULL UNIQUE,
   agent_password_hash TEXT    NOT NULL,
   agent_password_enc  TEXT    NOT NULL DEFAULT '',
-  upstream_url        TEXT    NOT NULL,
+  upstream_url        TEXT    NOT NULL DEFAULT '', -- legacy plaintext; always '' once migrated
+  upstream_enc        TEXT    NOT NULL DEFAULT '',
+  upstream_target     TEXT    NOT NULL DEFAULT '',
   max_rows            INTEGER NOT NULL DEFAULT 1000,
   gate_mutations      INTEGER NOT NULL DEFAULT 1,
   pii_rules           TEXT    NOT NULL DEFAULT '[]',
@@ -172,6 +439,19 @@ CREATE TABLE IF NOT EXISTS connections (
   expires_at          TEXT    NOT NULL DEFAULT '',
   rotate_every        INTEGER NOT NULL DEFAULT 0,
   rotated_at          TEXT    NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS security_events (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  connection_id INTEGER NOT NULL,
+  agent_username TEXT   NOT NULL,
+  at            TEXT    NOT NULL,
+  kind          TEXT    NOT NULL,
+  detail        TEXT    NOT NULL,
+  query_enc     TEXT    NOT NULL DEFAULT ''
 );`); err != nil {
 		return err
 	}
@@ -182,6 +462,12 @@ CREATE TABLE IF NOT EXISTS connections (
 		`ALTER TABLE connections ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE connections ADD COLUMN rotate_every INTEGER NOT NULL DEFAULT 0`, // nanoseconds; 0 = never
 		`ALTER TABLE connections ADD COLUMN rotated_at TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE connections ADD COLUMN upstream_enc TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE connections ADD COLUMN upstream_target TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE connections ADD COLUMN strict_all INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE connections ADD COLUMN safe_relations TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE connections ADD COLUMN suspended_at TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE connections ADD COLUMN suspend_reason TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := s.db.Exec(col); err != nil &&
 			!strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
@@ -232,6 +518,13 @@ func (s *Store) Create(in CreateInput) (*Connection, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	if in.SafeRelations == nil {
+		in.SafeRelations = []string{}
+	}
+	safeJSON, err := json.Marshal(in.SafeRelations)
+	if err != nil {
+		return nil, "", err
+	}
 
 	password, err := randomToken(24)
 	if err != nil {
@@ -241,11 +534,7 @@ func (s *Store) Create(in CreateInput) (*Connection, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	encPassword, err := s.encrypt(password)
-	if err != nil {
-		return nil, "", err
-	}
-
+	target := upstreamTarget(in.UpstreamURL)
 	createdAt := time.Now().UTC()
 
 	// Generate a unique username; retry on the rare collision.
@@ -257,11 +546,20 @@ func (s *Store) Create(in CreateInput) (*Connection, string, error) {
 			return nil, "", err
 		}
 		username = slugify(in.Name) + "_" + strings.ToLower(suffix[:6])
+		// Sealed per attempt because the ciphertext is bound to the username.
+		encPassword, err := s.seal(password, fieldPassword, username)
+		if err != nil {
+			return nil, "", err
+		}
+		encUpstream, err := s.seal(in.UpstreamURL, fieldUpstream, username)
+		if err != nil {
+			return nil, "", err
+		}
 		res, err := s.db.Exec(`
-INSERT INTO connections (name, agent_username, agent_password_hash, agent_password_enc, upstream_url, max_rows, gate_mutations, pii_rules, created_at, expires_at, rotate_every, rotated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			in.Name, username, string(hash), encPassword, in.UpstreamURL, in.MaxRows, boolToInt(in.GateMutations), string(rulesJSON), createdAt.Format(time.RFC3339Nano), formatExpiry(in.ExpiresAt),
-			int64(in.RotateEvery), formatTimestamp(createdAt))
+INSERT INTO connections (name, agent_username, agent_password_hash, agent_password_enc, upstream_url, upstream_enc, upstream_target, max_rows, gate_mutations, pii_rules, created_at, expires_at, rotate_every, rotated_at, strict_all, safe_relations)
+VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			in.Name, username, string(hash), encPassword, encUpstream, target, in.MaxRows, boolToInt(in.GateMutations), string(rulesJSON), createdAt.Format(time.RFC3339Nano), formatExpiry(in.ExpiresAt),
+			int64(in.RotateEvery), formatTimestamp(createdAt), boolToInt(in.StrictAll), string(safeJSON))
 		if err != nil {
 			if isUniqueViolation(err) {
 				continue
@@ -279,19 +577,22 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	}
 
 	return &Connection{
-		ID:            id,
-		Name:          in.Name,
-		AgentUsername: username,
-		UpstreamURL:   in.UpstreamURL,
-		MaxRows:       in.MaxRows,
-		GateMutations: in.GateMutations,
-		PIIRules:      in.PIIRules,
-		CreatedAt:     createdAt,
-		ExpiresAt:     in.ExpiresAt,
-		RotateEvery:   in.RotateEvery,
-		RotatedAt:     createdAt,
-		AgentPassword: password,
-		passwordHash:  string(hash),
+		ID:             id,
+		Name:           in.Name,
+		AgentUsername:  username,
+		UpstreamURL:    in.UpstreamURL,
+		UpstreamTarget: target,
+		MaxRows:        in.MaxRows,
+		GateMutations:  in.GateMutations,
+		PIIRules:       in.PIIRules,
+		CreatedAt:      createdAt,
+		ExpiresAt:      in.ExpiresAt,
+		RotateEvery:    in.RotateEvery,
+		RotatedAt:      createdAt,
+		StrictAll:      in.StrictAll,
+		SafeRelations:  in.SafeRelations,
+		AgentPassword:  password,
+		passwordHash:   string(hash),
 	}, password, nil
 }
 
@@ -313,7 +614,15 @@ func (s *Store) rotate(id int64, now time.Time) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	encPassword, err := s.encrypt(password)
+	var username string
+	err = s.db.QueryRow(`SELECT agent_username FROM connections WHERE id = ?`, id).Scan(&username)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	encPassword, err := s.seal(password, fieldPassword, username)
 	if err != nil {
 		return "", err
 	}
@@ -339,7 +648,7 @@ type Rotation struct {
 // RotateDue rotates the password of every connection whose automatic rotation
 // is due (rotated_at + rotate_every <= now) and reports what was rotated. The
 // new password is stored exactly as Rotate stores it (bcrypt hash plus
-// ciphertext under the admin secret), so it stays re-displayable. A failure on
+// ciphertext under the master key), so it stays re-displayable. A failure on
 // one connection is returned after the others have been attempted.
 func (s *Store) RotateDue(now time.Time) ([]Rotation, error) {
 	rows, err := s.db.Query(`
@@ -409,6 +718,10 @@ type UpdateInput struct {
 	// automatic rotation is measured from the existing RotatedAt.
 	SetRotateEvery bool
 	RotateEvery    time.Duration
+	// SetStrict gates whether StrictAll and SafeRelations are applied.
+	SetStrict     bool
+	StrictAll     bool
+	SafeRelations []string
 }
 
 // Update changes a connection's policy fields (name, row limit, mutation
@@ -438,6 +751,17 @@ func (s *Store) Update(id int64, in UpdateInput) error {
 		}
 		set += `, rotate_every = ?`
 		args = append(args, int64(in.RotateEvery))
+	}
+	if in.SetStrict {
+		if in.SafeRelations == nil {
+			in.SafeRelations = []string{}
+		}
+		safeJSON, err := json.Marshal(in.SafeRelations)
+		if err != nil {
+			return err
+		}
+		set += `, strict_all = ?, safe_relations = ?`
+		args = append(args, boolToInt(in.StrictAll), string(safeJSON))
 	}
 	args = append(args, id)
 	res, err := s.db.Exec(`UPDATE connections SET `+set+` WHERE id = ?`, args...)
@@ -474,11 +798,11 @@ func (s *Store) DeleteExpired(now time.Time) (int64, error) {
 	return n, nil
 }
 
-// List returns all connections. AgentPassword is decrypted for display when a
-// secret is set and the stored ciphertext is still valid; otherwise it is "".
+// List returns all connections with their secrets decrypted. A value that can't
+// be decrypted comes back empty, so one damaged row doesn't hide the others.
 func (s *Store) List() ([]Connection, error) {
 	rows, err := s.db.Query(`
-SELECT id, name, agent_username, agent_password_enc, upstream_url, max_rows, gate_mutations, pii_rules, created_at, expires_at, rotate_every, rotated_at
+SELECT id, name, agent_username, agent_password_enc, upstream_enc, upstream_target, max_rows, gate_mutations, pii_rules, created_at, expires_at, rotate_every, rotated_at, strict_all, safe_relations, suspended_at, suspend_reason
 FROM connections ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -491,8 +815,9 @@ FROM connections ORDER BY id`)
 		if err != nil {
 			return nil, err
 		}
-		// scanConnection leaves the ciphertext in AgentPassword; decrypt it.
-		c.AgentPassword = s.decrypt(c.AgentPassword)
+		// scanConnection leaves ciphertext in both secret fields; decrypt them.
+		c.AgentPassword, _ = s.unseal(c.AgentPassword, fieldPassword, c.AgentUsername)
+		c.UpstreamURL, _ = s.unseal(c.UpstreamURL, fieldUpstream, c.AgentUsername)
 		out = append(out, *c)
 	}
 	return out, rows.Err()
@@ -504,7 +829,7 @@ FROM connections ORDER BY id`)
 // before the sweeper removes it.
 func (s *Store) GetByUsername(username string) (*Connection, error) {
 	row := s.db.QueryRow(`
-SELECT id, name, agent_username, agent_password_hash, upstream_url, max_rows, gate_mutations, pii_rules, created_at, expires_at, rotate_every, rotated_at
+SELECT id, name, agent_username, agent_password_hash, upstream_enc, upstream_target, max_rows, gate_mutations, pii_rules, created_at, expires_at, rotate_every, rotated_at, strict_all, safe_relations, suspended_at, suspend_reason
 FROM connections WHERE agent_username = ?`, username)
 	c, err := scanConnectionWithHash(row)
 	if err != nil {
@@ -512,6 +837,14 @@ FROM connections WHERE agent_username = ?`, username)
 	}
 	if c.Expired(time.Now().UTC()) {
 		return nil, ErrNotFound
+	}
+	// Fail closed: an undecryptable upstream must not become an empty connection
+	// string, which libpq-style clients would resolve to local defaults.
+	if c.UpstreamURL, err = s.unseal(c.UpstreamURL, fieldUpstream, c.AgentUsername); err != nil {
+		return nil, fmt.Errorf("decrypt upstream for %q: %w", c.AgentUsername, err)
+	}
+	if c.UpstreamURL == "" {
+		return nil, fmt.Errorf("connection %q has no upstream", c.AgentUsername)
 	}
 	return c, nil
 }
@@ -529,70 +862,82 @@ func (c *Connection) Policy(hashSalt, redactString string) *policy.Policy {
 type scanner interface{ Scan(...any) error }
 
 func scanConnection(sc scanner) (*Connection, error) {
-	var (
-		c           Connection
-		gate        int
-		rulesJSON   string
-		createdAt   string
-		expiresAt   string
-		rotateEvery int64
-		rotatedAt   string
-	)
-	if err := sc.Scan(&c.ID, &c.Name, &c.AgentUsername, &c.AgentPassword, &c.UpstreamURL, &c.MaxRows, &gate, &rulesJSON, &createdAt, &expiresAt, &rotateEvery, &rotatedAt); err != nil {
+	var c Connection
+	var r rawColumns
+	if err := sc.Scan(&c.ID, &c.Name, &c.AgentUsername, &c.AgentPassword, &c.UpstreamURL, &c.UpstreamTarget, &c.MaxRows, &r.gate, &r.rulesJSON, &r.createdAt, &r.expiresAt, &r.rotateEvery, &r.rotatedAt, &r.strictAll, &r.safeJSON, &r.suspendedAt, &c.SuspendReason); err != nil {
 		return nil, err
 	}
-	return finishScan(&c, gate, rulesJSON, createdAt, expiresAt, rotateEvery, rotatedAt)
+	return finishScan(&c, r)
 }
 
 func scanConnectionWithHash(sc scanner) (*Connection, error) {
-	var (
-		c           Connection
-		gate        int
-		rulesJSON   string
-		createdAt   string
-		expiresAt   string
-		rotateEvery int64
-		rotatedAt   string
-	)
-	if err := sc.Scan(&c.ID, &c.Name, &c.AgentUsername, &c.passwordHash, &c.UpstreamURL, &c.MaxRows, &gate, &rulesJSON, &createdAt, &expiresAt, &rotateEvery, &rotatedAt); err != nil {
+	var c Connection
+	var r rawColumns
+	if err := sc.Scan(&c.ID, &c.Name, &c.AgentUsername, &c.passwordHash, &c.UpstreamURL, &c.UpstreamTarget, &c.MaxRows, &r.gate, &r.rulesJSON, &r.createdAt, &r.expiresAt, &r.rotateEvery, &r.rotatedAt, &r.strictAll, &r.safeJSON, &r.suspendedAt, &c.SuspendReason); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-	return finishScan(&c, gate, rulesJSON, createdAt, expiresAt, rotateEvery, rotatedAt)
+	return finishScan(&c, r)
 }
 
-func finishScan(c *Connection, gate int, rulesJSON, createdAt, expiresAt string, rotateEvery int64, rotatedAt string) (*Connection, error) {
-	c.GateMutations = gate != 0
-	if err := json.Unmarshal([]byte(rulesJSON), &c.PIIRules); err != nil {
+// rawColumns holds the columns that need converting after a scan.
+type rawColumns struct {
+	gate, strictAll                                                   int
+	rulesJSON, safeJSON, createdAt, expiresAt, rotatedAt, suspendedAt string
+	rotateEvery                                                       int64
+}
+
+func finishScan(c *Connection, r rawColumns) (*Connection, error) {
+	c.GateMutations = r.gate != 0
+	c.StrictAll = r.strictAll != 0
+	if err := json.Unmarshal([]byte(r.rulesJSON), &c.PIIRules); err != nil {
 		return nil, fmt.Errorf("decode pii_rules: %w", err)
 	}
-	if t, err := time.Parse(time.RFC3339Nano, createdAt); err == nil {
+	if err := json.Unmarshal([]byte(r.safeJSON), &c.SafeRelations); err != nil {
+		return nil, fmt.Errorf("decode safe_relations: %w", err)
+	}
+	if t, err := time.Parse(time.RFC3339Nano, r.createdAt); err == nil {
 		c.CreatedAt = t
 	}
-	if expiresAt != "" {
-		if t, err := time.Parse(time.RFC3339Nano, expiresAt); err == nil {
+	if r.expiresAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, r.expiresAt); err == nil {
 			c.ExpiresAt = t
 		}
 	}
-	if rotateEvery > 0 {
-		c.RotateEvery = time.Duration(rotateEvery)
+	if r.rotateEvery > 0 {
+		c.RotateEvery = time.Duration(r.rotateEvery)
 	}
 	// A blank rotated_at (row predating the column) counts creation as the
 	// last rotation.
 	c.RotatedAt = c.CreatedAt
-	if rotatedAt != "" {
-		if t, err := time.Parse(time.RFC3339Nano, rotatedAt); err == nil {
+	if r.rotatedAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, r.rotatedAt); err == nil {
 			c.RotatedAt = t
+		}
+	}
+	if r.suspendedAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, r.suspendedAt); err == nil {
+			c.SuspendedAt = t
+		} else {
+			c.SuspendedAt = time.Now().UTC() // unreadable: stay suspended
 		}
 	}
 	return c, nil
 }
 
-func randomToken(nBytes int) (string, error) {
-	b := make([]byte, nBytes)
+func randomBytes(n int) ([]byte, error) {
+	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+func randomToken(nBytes int) (string, error) {
+	b, err := randomBytes(nBytes)
+	if err != nil {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil

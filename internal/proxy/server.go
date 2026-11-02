@@ -9,7 +9,9 @@ import (
 	"crypto/tls"
 	"log/slog"
 	"net"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/kotisivukamu/pg-agent-proxy/internal/approval"
 	"github.com/kotisivukamu/pg-agent-proxy/internal/config"
@@ -24,6 +26,11 @@ type Server struct {
 	tlsConfig *tls.Config
 	log       *slog.Logger
 	connSeq   atomic.Uint64
+
+	mu       sync.Mutex
+	sessions map[int64]map[*session]struct{} // live sessions by connection id
+	strikes  map[int64][]time.Time           // recent blocked statements
+	catalogs map[int64]*cachedCatalog
 }
 
 // New constructs a Server. The approver is shared with the admin server so the
@@ -36,6 +43,9 @@ func New(cfg *config.Config, st *store.Store, approver approval.Approver, tlsCon
 		approver:  approver,
 		tlsConfig: tlsConfig,
 		log:       log,
+		sessions:  map[int64]map[*session]struct{}{},
+		strikes:   map[int64][]time.Time{},
+		catalogs:  map[int64]*cachedCatalog{},
 	}
 }
 

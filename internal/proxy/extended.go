@@ -10,15 +10,25 @@ import (
 
 // handleParse records a client-prepared statement. The query is not sent
 // upstream yet; execution happens at Execute via ExecParams.
-func (s *session) handleParse(m *pgproto3.Parse) {
+func (s *session) handleParse(ctx context.Context, m *pgproto3.Parse) {
 	if s.batchFailed {
 		return
 	}
+	isSchema := s.isSchemaCommand(m.Query)
+	kind := policy.KindRead
+	if !isSchema {
+		decision := s.check(ctx, m.Query)
+		if !s.allowed(decision, m.Query) {
+			s.batchFailed = true
+			return
+		}
+		kind = decision.Kind
+	}
 	s.statements[m.Name] = &preparedStmt{
 		query:     m.Query,
-		kind:      policy.Classify(m.Query),
+		kind:      kind,
 		paramOIDs: m.ParameterOIDs,
-		isSchema:  s.isSchemaCommand(m.Query),
+		isSchema:  isSchema,
 	}
 	s.be.Send(&pgproto3.ParseComplete{})
 }
@@ -119,6 +129,13 @@ func (s *session) handleExecute(ctx context.Context, m *pgproto3.Execute) {
 			s.batchFailed = true
 			return
 		}
+		restore, err := s.enableWrites(ctx)
+		if err != nil {
+			s.sendQueryError(err)
+			s.batchFailed = true
+			return
+		}
+		defer restore(ctx)
 	}
 
 	rr := s.upstream.ExecParams(ctx, st.query, por.params, st.paramOIDs, por.paramFormats, por.resultFormats)

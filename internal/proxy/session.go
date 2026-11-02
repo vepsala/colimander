@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 
 	"github.com/kotisivukamu/pg-agent-proxy/internal/policy"
+	"github.com/kotisivukamu/pg-agent-proxy/internal/scrub"
 	"github.com/kotisivukamu/pg-agent-proxy/internal/store"
 )
 
@@ -54,6 +55,13 @@ type session struct {
 	// batchFailed is set after an error in an extended-protocol batch; further
 	// messages are ignored until the next Sync (per the PostgreSQL protocol).
 	batchFailed bool
+
+	// terminated is set when the tripwire has ended this session.
+	terminated bool
+
+	// readOnlyPending means an approved write turned read-only mode off, and it
+	// must come back on when the current transaction ends.
+	readOnlyPending bool
 }
 
 var parameterStatusKeys = []string{
@@ -75,6 +83,8 @@ func (s *session) serve(ctx context.Context) {
 		}
 	}()
 
+	s.srv.register(s)
+	defer s.srv.unregister(s)
 	s.log.Info("session established", "connection", s.connInfo.Name)
 	s.loop(ctx)
 	s.log.Info("session closed")
@@ -142,6 +152,11 @@ func (s *session) startup(ctx context.Context) bool {
 	s.upstream = upstream
 	s.upstreamDB = describeUpstream(conn.UpstreamURL)
 
+	if err := s.prepareUpstream(ctx); err != nil {
+		s.log.Error("upstream refused", "err", err)
+		s.fatal("28000", "pg-agent-proxy: "+err.Error())
+		return false
+	}
 	return s.completeStartup()
 }
 
@@ -167,6 +182,11 @@ func (s *session) authenticate(startup *pgproto3.StartupMessage) *store.Connecti
 	if err != nil || !store.VerifyPassword(conn, pw.Password) {
 		s.log.Warn("authentication failed", "user", user)
 		s.fatal("28P01", fmt.Sprintf("password authentication failed for user %q", user))
+		return nil
+	}
+	if conn.Suspended() {
+		s.log.Warn("suspended connection tried to authenticate", "user", user)
+		s.fatal("28000", "pg-agent-proxy: this connection is suspended after a security event; resume it from the admin UI to get a new password")
 		return nil
 	}
 	return conn
@@ -201,7 +221,7 @@ func (s *session) loop(ctx context.Context) {
 		case *pgproto3.Query:
 			s.handleSimpleQuery(ctx, m.String)
 		case *pgproto3.Parse:
-			s.handleParse(m)
+			s.handleParse(ctx, m)
 		case *pgproto3.Bind:
 			s.handleBind(m)
 		case *pgproto3.Describe:
@@ -238,13 +258,22 @@ func (s *session) sendError(code, message string) {
 func (s *session) sendQueryError(err error) {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
+		// Database errors quote values ("invalid input syntax: alice@..."), so
+		// they go through the scanner like any result.
+		message, kinds := scrub.String(pgErr.Message)
+		detail, detailKinds := scrub.String(pgErr.Detail)
+		hint, hintKinds := scrub.String(pgErr.Hint)
+		if all := mergeKinds(mergeKinds(kinds, detailKinds), hintKinds); len(all) > 0 {
+			s.recordScrubbed(all, "")
+		}
 		s.be.Send(&pgproto3.ErrorResponse{
-			Severity: "ERROR", Code: pgErr.Code, Message: pgErr.Message,
-			Detail: pgErr.Detail, Hint: pgErr.Hint,
+			Severity: "ERROR", Code: pgErr.Code, Message: message,
+			Detail: detail, Hint: hint,
 		})
 		return
 	}
-	s.be.Send(&pgproto3.ErrorResponse{Severity: "ERROR", Code: "58000", Message: err.Error()})
+	message, _ := scrub.String(err.Error())
+	s.be.Send(&pgproto3.ErrorResponse{Severity: "ERROR", Code: "58000", Message: message})
 }
 
 func (s *session) fatal(code, message string) {

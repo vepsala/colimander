@@ -103,6 +103,12 @@
       <tbody id="rows"></tbody>
     </table>
   </div>
+
+  <div class="panel">
+    <h2>Security events</h2>
+    <div class="hint">This guards against accidental exposure, not a determined attacker. A blocked statement can be an honest mistake; a suspension means something unusual happened.</div>
+    <table><tbody id="events"></tbody></table>
+  </div>
 </main>
 
 <div id="edit-overlay" class="overlay" style="display:none">
@@ -133,6 +139,11 @@
       <button class="secondary" type="button" onclick="detectPiiEdit()">⚲ Detect from upstream</button>
       <span id="edit-detect-status" class="muted"></span>
     </div>
+    <div class="hint">redact is the safe default. A hash is generally still personal data under GDPR. Use allow for a column you've reviewed and found harmless.</div>
+    <label style="margin-top:12px">Strict rules</label>
+    <div class="check"><input id="e-strict" type="checkbox"><label style="margin:0">Treat every table as holding PII until marked safe (recommended for production)</label></div>
+    <label>Tables and views marked safe</label>
+    <input id="e-safe" type="text" placeholder="comma-separated, e.g. products, sales_summary">
     <div style="margin-top:18px;display:flex;gap:10px">
       <button onclick="saveEdit()">Save changes</button>
       <button class="secondary" onclick="closeEdit()">Cancel</button>
@@ -151,7 +162,7 @@
 
 <script>
 const $ = s => document.querySelector(s);
-const actions = ["hash","redact"];
+const actions = ["redact","hash","allow"];
 let connsCache = [];
 let editId = null;
 
@@ -162,7 +173,7 @@ async function req(url, opts) {
   return res;
 }
 
-function addPiiTo(sel, name="", table="", action="hash") {
+function addPiiTo(sel, name="", table="", action="redact") {
   const div = document.createElement("div");
   div.className = "pii";
   div.innerHTML = `
@@ -279,6 +290,21 @@ function copyText(el){
   if (note) { note.style.opacity = "1"; setTimeout(() => note.style.opacity = "0", 1000); }
 }
 
+async function resume(id) {
+  if (!confirm("Resume this connection? Check what happened first. It gets a new password, and the old one stays dead.")) return;
+  const res = await req(`/api/connections/${id}/resume`, {method:"POST"});
+  if (res.ok) load();
+}
+
+async function loadEvents() {
+  let events = [];
+  try { events = await (await req("/api/security-events")).json(); } catch { return; }
+  $("#events").innerHTML = events.length ? events.slice(0, 50).map(e => `
+    <tr><td class="muted">${new Date(e.at).toLocaleString()}</td><td><code>${esc(e.agent_username)}</code></td>
+    <td><span class="tag">${esc(e.kind)}</span></td><td>${esc(e.detail)}${e.query ? `<br><code class="muted">${esc(e.query)}</code>` : ""}</td></tr>`).join("")
+    : `<tr><td colspan="4" class="empty">Nothing yet.</td></tr>`;
+}
+
 async function rotate(id) {
   if (!confirm("Rotate the password? The old one stops working immediately.")) return;
   const res = await req(`/api/connections/${id}/rotate`, {method:"POST"});
@@ -293,6 +319,8 @@ function edit(id) {
   $("#e-name").value = c.name || "";
   $("#e-maxrows").value = c.max_rows || 0;
   $("#e-gate").checked = !!c.gate_mutations;
+  $("#e-strict").checked = !!c.strict_all;
+  $("#e-safe").value = (c.safe_relations || []).join(", ");
   $("#epii-list").innerHTML = "";
   (c.pii_rules || []).forEach(r => addPiiTo("#epii-list", r.name, r.table, r.action));
   $("#e-exp-current").textContent = expiryText(c.expires_at);
@@ -318,6 +346,8 @@ async function saveEdit() {
     max_rows: parseInt($("#e-maxrows").value || "0", 10),
     gate_mutations: $("#e-gate").checked,
     pii_rules: gatherPiiFrom("#epii-list"),
+    strict_all: $("#e-strict").checked,
+    safe_relations: $("#e-safe").value.split(",").map(x => x.trim()).filter(Boolean),
   };
   // Only touch the expiry when the operator opted in, so editing other fields
   // leaves it unchanged. Blank ttl = clear (no expiry); a value = now+ttl.
@@ -360,12 +390,13 @@ async function load() {
       <td>${c.max_rows||"∞"} rows<br>${c.gate_mutations?"gated":"open"}<br><span class="muted">${expiryText(c.expires_at)}</span>${rotationText(c) ? `<br><span class="muted">${esc(rotationText(c))}</span>` : ""}</td>
       <td>${(c.pii_rules||[]).map(r=>`<span class="tag">${esc(r.name)}:${esc(r.action)}</span>`).join("")||'<span class="muted">none</span>'}</td>
       <td class="actions">
+        ${c.suspended_at ? `<button class="approve" onclick="resume(${c.id})">Resume</button>` : ""}
         <button class="secondary" onclick="edit(${c.id})">Edit</button>
         <button class="secondary" onclick="rotate(${c.id})">Rotate</button>
         <button class="danger" onclick="del(${c.id})">Delete</button>
       </td>
     </tr>
-    <tr class="csrow"><td colspan="6">${csCell}</td></tr>`;
+    <tr class="csrow"><td colspan="6">${c.suspended_at ? `<div class="err">Suspended: ${esc(c.suspend_reason)}. Treat this environment as possibly compromised. Resuming issues a new password.</div>` : csCell}</td></tr>`;
   }).join("");
 }
 
@@ -399,7 +430,9 @@ async function loadApprovals() {
   overlay.style.display = "flex";
 }
 
-addPii(); load(); loadApprovals(); setInterval(loadApprovals, 2000);
+addPii(); load(); loadApprovals(); loadEvents();
+setInterval(loadApprovals, 2000);
+setInterval(() => { load(); loadEvents(); }, 10000);
 </script>
 </body>
 </html>

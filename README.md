@@ -65,7 +65,8 @@ Open the UI to create a connection, or use the CLI:
   -name billing-db \
   -upstream "postgres://user:pass@host:5432/db?sslmode=disable" \
   -max-rows 1000 \
-  -pii "email:hash,ssn:redact,phone:hash"
+  -strict-all -safe "products,sales_summary" \
+  -pii "email:redact,ssn:redact,phone:redact"
 # prints the agent connection string (password shown once)
 ```
 
@@ -102,7 +103,10 @@ text columns to retain hashing.
 
 ## Connections (the registry)
 
-Connections live in the SQLite file at `database`. Manage them in the web UI or
+Connections live in the SQLite file at `database`, with upstream URLs and agent
+passwords encrypted under `master_key_file`. Keep that key out of backups of the
+database. The proxy won't start if the key is missing or wrong; if it's lost,
+delete the registry, re-add the connections and hand out new agent passwords. Manage them in the web UI or
 with the CLI:
 
 ```bash
@@ -137,6 +141,7 @@ Process-wide settings live in `config.yaml` (see
 | `listen` | address agents connect to (default `127.0.0.1:6432`) |
 | `admin_listen` | web UI / API address — **unauthenticated**, keep on localhost |
 | `database` | path to the SQLite registry |
+| `master_key_file` | key that encrypts secrets in the registry, generated on first start (default: `master.key` beside `database`) |
 | `hash_salt` | secret salt mixed into every PII hash |
 | `redact_string` | replacement for `redact` columns |
 | `approval.mode` | `dashboard`, `http`, `auto_approve`, or `auto_deny` |
@@ -275,13 +280,59 @@ Simple-protocol `Query` runs through `pgconn.Exec`; extended-protocol
 client's parameter and result formats. Results are buffered so the proxy can
 anonymize columns and enforce the row limit before any data is sent.
 
-## Limitations (v1)
+## What this protects against
 
-- **PII matching is by column name**, applied across all tables. A rule's
-  optional `table` is used only for `detect-pii` output and schema annotation,
-  not to narrow which streamed rows get anonymized (deliberately conservative).
-- **Non-text PII columns return NULL** (see above).
-- **No query cancellation** (`CancelRequest` is ignored).
+This reduces **accidental** exposure of personal data and secrets, for example
+to a model provider, by a well-meaning agent writing ordinary queries. **It is
+not a security boundary against someone deliberately digging for data**, and it
+doesn't make a database's contents anonymous. Hashes generally remain personal
+data under GDPR, so `redact` is the default.
+
+Each statement is parsed with PostgreSQL's own parser before it reaches the
+database:
+
+- **Every statement:** file and server access, roles and extensions, `COPY`, `DO`
+  and statistics views like `pg_stats` are refused.
+- **Statements touching a table with PII:** only plain columns (which are masked),
+  and allowlisted computed results that don't use a PII column. Whole rows, JSON
+  conversions, subqueries in the select list and `UNION` on PII columns are refused
+  with a message the agent can act on. A statement is strict as a whole if any table
+  in it is.
+- **Other tables:** full control, including JSON and any built-in function.
+
+You choose what's masked. A table is strict if it has a rule, and **nothing is
+masked without one**. `detect-pii` and the admin UI's Detect button only suggest
+rules for you to review and save, so a new table stays unmasked until you add
+rules, apart from the scanner below. Views, materialized views and foreign tables
+are always strict, because they may read a PII table. Use `strict_all` to make
+every table strict until listed in `safe_relations`, and `allow` rules to exempt a
+column from a broader rule.
+
+Every result and error message also passes a scanner for emails, phone numbers,
+Finnish personal IDs, IBANs, card numbers and API keys.
+
+Connections run read-only until a write is approved, and superuser upstream roles
+are refused.
+
+### Tripwire
+
+Attempting something no honest agent needs (`pg_read_file`, `dblink`, `COPY ...
+PROGRAM`, `pg_shadow`, `CREATE ROLE`), or 10 blocked statements within 5 minutes,
+**suspends the connection**: its password stops working and its open sessions are
+closed, across restarts. Assume the environment is compromised and investigate.
+Resuming (`connections resume` or the admin UI) always issues a new password.
+Everything is recorded under Security events, with queries encrypted at rest.
+
+### Known gaps
+
+- A view or function that renames a PII column gets past column rules, leaving
+  only the scanner.
+- The scanner can't recognise a person's name. Mark free-text columns as PII.
+- `WHERE email LIKE 'a%'` can reveal values one guess at a time.
+- PII in a query the agent wrote itself isn't touched, and nor is anything agents
+  read from outside this proxy.
+- Non-text PII columns return NULL.
+- No query cancellation (`CancelRequest` is ignored).
 
 ## Development
 

@@ -19,12 +19,26 @@ func (s *session) handleSimpleQuery(ctx context.Context, sql string) {
 		return
 	}
 
-	kind := policy.Classify(sql)
+	decision := s.check(ctx, sql)
+	if !s.allowed(decision, sql) {
+		if !s.terminated {
+			s.ready()
+		}
+		return
+	}
+	kind := decision.Kind
 	if kind == policy.KindMutation && s.policy.GateMutations() {
 		if !s.approveMutation(ctx, kind, sql) {
 			s.ready()
 			return
 		}
+		restore, err := s.enableWrites(ctx)
+		if err != nil {
+			s.sendQueryError(err)
+			s.ready()
+			return
+		}
+		defer restore(ctx)
 	}
 
 	mrr := s.upstream.Exec(ctx, sql)
@@ -67,8 +81,9 @@ func (s *session) streamResult(ctx context.Context, rr *pgconn.ResultReader, sen
 	fds := rr.FieldDescriptions()
 	actions := make([]policy.Action, len(fds))
 	for i, fd := range fds {
-		actions[i] = s.policy.ActionFor(fd.Name)
+		actions[i] = s.actionForField(fd)
 	}
+	var scrubbed []string
 
 	// Buffer the whole result so we can anonymize and enforce the row limit
 	// before any data leaves the proxy. pgconn reuses the row buffer, so each
@@ -88,11 +103,20 @@ func (s *session) streamResult(ctx context.Context, rr *pgconn.ResultReader, sen
 			default:
 				row[i] = s.policy.AnonymizeValue(actions[i], fds[i].DataTypeOID, v)
 			}
+			// Every value also passes the scanner, unless already masked.
+			if actions[i] == policy.ActionNone && row[i] != nil {
+				var kinds []string
+				row[i], kinds = scrubValue(fds[i], row[i])
+				scrubbed = mergeKinds(scrubbed, kinds)
+			}
 		}
 		rows = append(rows, row)
 	}
 
 	tag, err := rr.Close()
+	if len(scrubbed) > 0 {
+		s.recordScrubbed(scrubbed, query)
+	}
 	if err != nil {
 		s.sendQueryError(err)
 		return true

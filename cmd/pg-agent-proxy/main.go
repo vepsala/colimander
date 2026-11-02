@@ -82,12 +82,14 @@ func runServe(args []string) {
 		os.Exit(1)
 	}
 
-	st, err := store.Open(cfg.Database)
+	adminToken := os.Getenv("PGPROXY_ADMIN_TOKEN")
+	st, err := store.Open(store.Options{Path: cfg.Database, MasterKeyFile: cfg.MasterKeyFile, LegacySecret: adminToken})
 	if err != nil {
 		log.Error("open registry failed", "err", err, "path", cfg.Database)
 		os.Exit(1)
 	}
 	defer st.Close()
+	logStartup(log, st.Startup(), cfg.MasterKeyFile)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -110,11 +112,6 @@ func runServe(args []string) {
 		log.Info("approvals are resolved from the admin dashboard", "timeout", cfg.Approval.Timeout)
 	}
 
-	adminToken := os.Getenv("PGPROXY_ADMIN_TOKEN")
-	// Agent passwords are stored encrypted under a key derived from the admin
-	// token, so they can be re-displayed in the dashboard. Rotating the token
-	// makes previously stored passwords unrecoverable (rotate to re-mint).
-	st.UseSecret(adminToken)
 	startAdmin := true
 	switch {
 	case adminToken != "":
@@ -154,6 +151,28 @@ func runServe(args []string) {
 		stop()
 	}
 	wg.Wait()
+}
+
+// logStartup surfaces what opening the registry did to its secrets.
+func logStartup(log *slog.Logger, r store.StartupReport, keyFile string) {
+	if r.KeyCreated {
+		log.Info("created master key; keep it out of backups alongside the database", "path", keyFile)
+	}
+	if r.BackupExcludeErr != nil {
+		log.Warn("could not exclude master key from Time Machine", "path", keyFile, "err", r.BackupExcludeErr)
+	}
+	if r.PermsFixed {
+		log.Warn("master key was readable by other users; restricted to owner. Treat it as exposed", "path", keyFile)
+	}
+	if r.Migrated > 0 {
+		log.Info("encrypted existing connection secrets", "connections", r.Migrated)
+	}
+	if r.PasswordsCleared > 0 {
+		log.Warn("some agent passwords could not be carried over; they still work but can't be displayed until rotated", "connections", r.PasswordsCleared)
+	}
+	if r.ScrubPending {
+		log.Warn("old plaintext not yet purged from the database files; will retry on next start")
+	}
 }
 
 // sweepLoop runs sweep once a minute until ctx is done.

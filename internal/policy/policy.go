@@ -25,17 +25,21 @@ const (
 type PIIRule struct {
 	// Name is the column name to match (case-insensitive). Required.
 	Name string `json:"name"`
-	// Table optionally documents the owning table. It is used for schema
-	// annotation and detection output only; streamed rows are matched by
-	// column name regardless of table (a conservative default).
+	// Table limits the rule to one table. Without it, the rule covers the column
+	// in every table.
 	Table string `json:"table,omitempty"`
-	// Action is "hash" or "redact".
+	// Action is "redact", "hash" or "allow". A hash is pseudonymous, not
+	// anonymous: under GDPR it generally remains personal data, so prefer redact.
+	// "allow" records that a column was reviewed and holds nothing sensitive,
+	// which also exempts it from a broader rule.
 	Action string `json:"action"`
 }
 
 // Policy is the compiled, immutable set of rules used at request time.
 type Policy struct {
-	byColumn      map[string]Action
+	byColumn      map[string]Action // rules with no table
+	byTable       map[string]Action // rules with a table, keyed "table.column"
+	byName        map[string]Action // every rule by column name, most restrictive
 	rules         []PIIRule
 	salt          []byte
 	redact        []byte
@@ -50,6 +54,8 @@ func New(rules []PIIRule, hashSalt, redactString string, maxRows int, gateMutati
 	}
 	p := &Policy{
 		byColumn:      make(map[string]Action, len(rules)),
+		byTable:       make(map[string]Action, len(rules)),
+		byName:        make(map[string]Action, len(rules)),
 		rules:         rules,
 		salt:          []byte(hashSalt),
 		redact:        []byte(redactString),
@@ -57,12 +63,29 @@ func New(rules []PIIRule, hashSalt, redactString string, maxRows int, gateMutati
 		gateMutations: gateMutations,
 	}
 	for _, r := range rules {
-		p.byColumn[strings.ToLower(r.Name)] = ParseAction(r.Action)
+		name, action := strings.ToLower(r.Name), ParseAction(r.Action)
+		if r.Table != "" {
+			p.byTable[strings.ToLower(tableName(r.Table))+"."+name] = action
+		} else {
+			p.byColumn[name] = action
+		}
+		if existing, ok := p.byName[name]; !ok || action > existing {
+			p.byName[name] = action
+		}
 	}
 	return p
 }
 
-// ParseAction converts a config string to an Action.
+// tableName strips any schema from a table name.
+func tableName(t string) string {
+	if i := strings.LastIndexByte(t, '.'); i >= 0 {
+		return t[i+1:]
+	}
+	return t
+}
+
+// ParseAction converts a config string to an Action. "allow", and anything
+// unrecognised, returns ActionNone; only the rule's presence distinguishes them.
 func ParseAction(s string) Action {
 	switch strings.ToLower(s) {
 	case "hash":
@@ -83,12 +106,21 @@ func (p *Policy) GateMutations() bool { return p.gateMutations }
 // Rules returns the configured PII rules (used for schema annotation).
 func (p *Policy) Rules() []PIIRule { return p.rules }
 
-// ActionFor returns the anonymization action for a column name.
+// ActionFor returns the action for a result column known only by its name, such
+// as a computed column. It errs towards masking: a rule for that name applies
+// whatever the rule's table.
 func (p *Policy) ActionFor(columnName string) Action {
-	if a, ok := p.byColumn[strings.ToLower(columnName)]; ok {
+	return p.byName[strings.ToLower(columnName)]
+}
+
+// ActionForOrigin returns the action for a column whose source table is known.
+// PostgreSQL still reports the source through an alias, so this catches renames.
+func (p *Policy) ActionForOrigin(table, column string) Action {
+	name := strings.ToLower(column)
+	if a, ok := p.byTable[strings.ToLower(table)+"."+name]; ok {
 		return a
 	}
-	return ActionNone
+	return p.byColumn[name]
 }
 
 // AnonymizeValue applies the column's action to a raw value, honoring the
