@@ -104,3 +104,10 @@ agent can do with this permission, and is it reversible?"
   stateful counters per profile; today we just deny app-create entirely.
 - README/docs are written for humans; this file is the agent-facing
   equivalent — keep them in sync if you change behaviour either way.
+
+## Daemon surfaces
+
+- **VM-facing:** TCP on `127.0.0.1` only. VMs reach it through Lima's host address, so never bind wider.
+- **Control:** `~/.colimander/control.sock` (mode 0600) for the app and CLI. Admin actions go here, never on a TCP port a VM can reach.
+- **Suspension:** `colimander suspend <name>` writes `~/.colimander/suspended/<name>`, which the broker checks on every request. The VM keeps running for inspection. `colimander resume <name>` always issues a new handle.
+- **Database proxy:** `internal/pgproxy`, run as `colimander db`. Not wired into the daemon yet.

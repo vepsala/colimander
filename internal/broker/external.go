@@ -67,6 +67,10 @@ func DefaultDopplerEndpoints() []EndpointRule {
 // returns the profile name and its policy. Mirrors authProfile() in broker.go
 // but for the Bearer-token shape required by fly/doppler CLIs.
 func (b *broker) authProfileFromBearer(r *http.Request) (string, *Policy, error) {
+	return refuseSuspended(b.verifyBearer(r))
+}
+
+func (b *broker) verifyBearer(r *http.Request) (string, *Policy, error) {
 	if b.devLoop {
 		if pol, err := loadPolicyForProfile(b.devProfile); err == nil {
 			return b.devProfile, pol, nil

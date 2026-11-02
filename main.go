@@ -1655,6 +1655,8 @@ Commands:
   policy {default|show <name>}        emit default policy JSON, or show a profile's current policy
   packages <name>                     install optional packages (claude-code, opencode, postgres, …) into a profile
   tokens {set|list|clear} ...         manage upstream tokens for fly.io / doppler brokers (~/.colimander/tokens.json)
+  suspend <name> [reason]             cut a sandbox off from the broker; the VM keeps running
+  resume <name>                       restore a suspended sandbox with new credentials
   version                             print version
 
 All mutating commands refuse profiles without a Colimander marker unless
@@ -1704,6 +1706,10 @@ func main() {
 		err = cmdPackages(os.Args[2:])
 	case "tokens":
 		err = broker.CmdTokens(os.Args[2:])
+	case "suspend":
+		err = broker.CmdSuspend(os.Args[2:])
+	case "resume":
+		err = broker.CmdResume(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("colimander", version)
 	case "help", "--help", "-h":

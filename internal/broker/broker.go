@@ -105,6 +105,10 @@ func (b *broker) githubToken() (string, error) {
 // policy. Constant-time compare to avoid trivial timing distinguishers
 // between "wrong profile" and "wrong handle".
 func (b *broker) authProfile(r *http.Request) (string, *Policy, error) {
+	return refuseSuspended(b.verifyBasic(r))
+}
+
+func (b *broker) verifyBasic(r *http.Request) (string, *Policy, error) {
 	if b.devLoop {
 		if pol, err := loadPolicyForProfile(b.devProfile); err == nil {
 			return b.devProfile, pol, nil
@@ -430,7 +434,7 @@ func brokerRewire(args []string) error {
 
 func brokerRun(args []string) error {
 	fs := flag.NewFlagSet("broker run", flag.ExitOnError)
-	port := fs.Int("port", defaultBrokerPort, "TCP port to listen on (0.0.0.0)")
+	port := fs.Int("port", defaultBrokerPort, "TCP port to listen on (loopback only)")
 	devLoop := fs.Bool("dev-allow-loopback", false, "TESTING: accept loopback requests and treat them as --dev-profile")
 	devProfile := fs.String("dev-profile", "", "TESTING: profile name to attribute loopback requests to")
 	if err := fs.Parse(args); err != nil {
@@ -472,7 +476,14 @@ func brokerRun(args []string) error {
 		b.errorResponse(w, http.StatusNotFound, "broker: unknown path "+r.URL.Path)
 	})
 
-	addr := fmt.Sprintf("0.0.0.0:%d", *port)
+	// VMs reach the Mac's loopback through Lima's host address, so nothing needs
+	// a wider bind, and a wider bind would expose the broker to the local network.
+	addr := fmt.Sprintf("127.0.0.1:%d", *port)
+	stopControl, err := b.serveControl()
+	if err != nil {
+		return fmt.Errorf("control socket: %w", err)
+	}
+	defer stopControl()
 	log.Printf("colimander broker listening on %s (audit: %s)", addr, b.auditPath)
 	return http.ListenAndServe(addr, mux)
 }
