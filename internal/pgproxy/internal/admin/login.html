@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pg-agent-proxy — sign in</title>
+<style>
+  body { margin:0; height:100vh; display:flex; align-items:center; justify-content:center;
+    background:#0f1216; color:#e6e9ee; font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  form { background:#171b21; border:1px solid #272d36; border-radius:10px; padding:28px; width:340px; }
+  h1 { font-size:16px; margin:0 0 4px; }
+  p { color:#8b93a1; font-size:12px; margin:0 0 18px; }
+  label { display:block; font-size:12px; color:#8b93a1; margin-bottom:6px; }
+  input { width:100%; box-sizing:border-box; background:#0c0f13; border:1px solid #272d36; border-radius:6px;
+    color:#e6e9ee; padding:10px; font:13px inherit; }
+  button { margin-top:16px; width:100%; background:#5b9dff; color:#06101f; border:0; border-radius:6px;
+    padding:10px; font:600 13px inherit; cursor:pointer; }
+</style>
+</head>
+<body>
+<form method="POST" action="/login">
+  <h1>pg-agent-proxy</h1>
+  <p>Enter the admin token to manage connections.</p>
+  <label>Admin token</label>
+  <input type="password" name="token" autofocus autocomplete="current-password">
+  <button type="submit">Sign in</button>
+</form>
+</body>
+</html>
