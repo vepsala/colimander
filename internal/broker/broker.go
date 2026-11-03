@@ -200,6 +200,29 @@ func authFailProfile(claimed string) string {
 	return claimed + "?"
 }
 
+// checkGraphQLRequest checks a request to /graphql and returns the body to
+// forward. Only a plain JSON POST is accepted: a compressed body or a query in
+// the URL would be read differently by GitHub than by the check.
+func checkGraphQLRequest(policy *Policy, r *http.Request) (bool, string, io.Reader) {
+	if r.Method != http.MethodPost {
+		return false, "graphql: only POST is allowed", nil
+	}
+	if r.URL.RawQuery != "" {
+		return false, "graphql: query parameters aren't allowed", nil
+	}
+	if enc := r.Header.Get("Content-Encoding"); enc != "" && !strings.EqualFold(enc, "identity") {
+		return false, "graphql: encoded bodies can't be checked", nil
+	}
+	body, err := readGraphQLBody(r.Body)
+	if err != nil {
+		return false, "graphql: " + err.Error(), nil
+	}
+	if ok, reason := policy.checkGraphQL(body); !ok {
+		return false, reason, nil
+	}
+	return true, "", bytes.NewReader(body)
+}
+
 func (b *broker) handleAPI(w http.ResponseWriter, r *http.Request) {
 	upstreamPath := strings.TrimPrefix(r.URL.Path, "/api")
 	if upstreamPath == "" {
@@ -213,7 +236,14 @@ func (b *broker) handleAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if ok, reason := policy.checkAPI(r.Method, upstreamPath); !ok {
+	var body io.Reader = r.Body
+	ok, reason := false, ""
+	if strings.EqualFold(upstreamPath, "/graphql") {
+		ok, reason, body = checkGraphQLRequest(policy, r)
+	} else {
+		ok, reason = policy.checkAPI(r.Method, upstreamPath)
+	}
+	if !ok {
 		b.audit(auditEntry{Profile: profile, Surface: "API", Method: r.Method, Path: upstreamPath, Action: "DENY", Detail: reason})
 		b.denyResponse(w, reason)
 		return
@@ -223,7 +253,7 @@ func (b *broker) handleAPI(w http.ResponseWriter, r *http.Request) {
 	if r.URL.RawQuery != "" {
 		upstream += "?" + r.URL.RawQuery
 	}
-	req, err := http.NewRequest(r.Method, upstream, r.Body)
+	req, err := http.NewRequest(r.Method, upstream, body)
 	if err != nil {
 		b.errorResponse(w, http.StatusInternalServerError, err.Error())
 		return

@@ -93,6 +93,10 @@ webhook tampering, SSH/GPG key changes, secret deletion, org settings,
 member-role escalation. All denied by default. Read access and benign writes
 (commits, PRs, comments) are allowed.
 
+A denylist only works if every route is understood, so REST paths under an
+unknown prefix are denied (see `apiTopLevel`), and GraphQL mutations must be on
+`graphQLMutationAllowlist`. Add to those lists rather than loosening the check.
+
 Don't relax the defaults without thinking through "what's the worst the
 agent can do with this permission, and is it reversible?"
 

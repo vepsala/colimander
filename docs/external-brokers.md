@@ -20,6 +20,14 @@ The GitHub policy is a **denylist** — the broker proxies everything except a
 specific set of destructive operations. That fits because the GitHub API is
 huge and most of it is benign (create commit, list PRs, etc.).
 
+Two limits keep that denylist from being sidestepped. REST calls must use a
+path prefix the broker knows (`/repos`, `/user`, `/orgs`, `/search` and a few
+more), so routes like `/repositories/<id>/...`, which name no owner, are
+denied. GraphQL is checked by its body: queries are allowed, and mutations only
+when every field is on a short list of everyday pull request and issue
+operations (`internal/broker/graphql.go`). GraphQL calls aren't scoped to
+`allowed_owners`, because they mostly name repositories by node ID.
+
 For fly and Doppler the broker uses an **allowlist** instead. Only methods +
 paths that match `allowed_endpoints` get through; everything else is denied
 with no chance to "forget to enumerate this dangerous endpoint." Smaller

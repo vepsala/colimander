@@ -108,6 +108,48 @@ func TestCheckAPIDeniesDisasters(t *testing.T) {
 	}
 }
 
+func TestCheckAPIDeniesPathsItCantCheck(t *testing.T) {
+	p := &Policy{
+		AllowedOwners: []string{"vepsala", "acme"},
+		DenyRules:     DefaultDenyRules(),
+	}
+	denied := []struct{ method, path string }{
+		// Reaches any repo by numeric ID, with no owner in the path.
+		{"GET", "/repositories/123"},
+		{"DELETE", "/repositories/123/labels/bug"},
+		{"DELETE", "/repositories/123/git/refs/heads/main"},
+		// Other owner-less prefixes the broker doesn't know.
+		{"PUT", "/teams/1/memberships/someone"},
+		{"DELETE", "/projects/1"},
+		{"POST", "/graphql"}, // only via checkGraphQL, which reads the body
+		{"POST", "/graphql/x"},
+		// Shapes that match differently here than at GitHub.
+		{"DELETE", "/repos/vepsala/kotisivukamu/"},
+		{"DELETE", "/repos//vepsala/kotisivukamu"},
+		{"DELETE", "/repos/vepsala/./kotisivukamu"},
+		{"DELETE", "/repos/vepsala/x/../kotisivukamu"},
+		{"POST", "/repos/vepsala/kotisivukamu/hooks?"}, // a decoded %3F
+		{"POST", "/repos/vepsala/kotisivukamu/hooks#"},
+		{"POST", "/repos/vepsala/kotisivukamu/hooks%2F"},
+		{"POST", "/repos/vepsala/kotisivukamu/hooks\t"},
+		// Case doesn't dodge a rule or the owner check.
+		{"DELETE", "/Repos/vepsala/kotisivukamu"},
+		{"POST", "/repos/vepsala/kotisivukamu/Hooks"},
+		{"GET", "/REPOS/other/x"},
+		{"GET", "/Repositories/123"},
+	}
+	for _, c := range denied {
+		if ok, _ := p.checkAPI(c.method, c.path); ok {
+			t.Errorf("checkAPI(%s %q) allowed but should have been denied", c.method, c.path)
+		}
+	}
+	for _, path := range []string{"/", "/rate_limit", "/search/issues", "/user/repos", "/repos/vepsala/kotisivukamu/pulls/1"} {
+		if ok, reason := p.checkAPI("GET", path); !ok {
+			t.Errorf("checkAPI(GET %s) denied: %s", path, reason)
+		}
+	}
+}
+
 func TestCheckAPIDeniesUnknownOwner(t *testing.T) {
 	p := &Policy{
 		AllowedOwners: []string{"vepsala"},

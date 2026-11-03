@@ -61,7 +61,8 @@ echo "  PostgreSQL 16 listening; connect locally as: sudo -u postgres psql"`,
 		Description: "mise as the polyglot version manager + Node LTS + pnpm. mise auto-switches versions per project via .tool-versions / .mise.toml.",
 		Script: `set -euo pipefail
 sudo apt-get update -qq
-sudo apt-get install -y -qq curl ca-certificates
+# Node's prebuilt binaries need libatomic1, which minimal Ubuntu images lack.
+sudo apt-get install -y -qq curl ca-certificates libatomic1
 # Install mise to ~/.local/bin (no sudo required).
 curl -fsSL https://mise.run | sh
 # Activate mise in interactive bash + zsh shells.

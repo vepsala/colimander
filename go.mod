@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/pganalyze/pg_query_go/v6 v6.2.5
+	github.com/vektah/gqlparser/v2 v2.5.27
 	github.com/wailsapp/wails/v2 v2.17.1
 	github.com/wasilibs/go-pgquery v0.0.0-20261027025405-3048dd293555
 	golang.org/x/crypto v0.58.0

@@ -9,7 +9,9 @@
 //     that are hard or impossible to recover from after a VM compromise:
 //     repo delete/transfer, branch deletion of main/master, branch-protection
 //     removal, secret deletion, webhook creation/modification, key changes,
-//     org settings, etc. Anything not matched is allowed through.
+//     org settings, etc. Anything not matched is allowed through, as long as
+//     the path is under a prefix the broker knows (see apiTopLevel).
+//     GraphQL is checked separately (graphql.go).
 
 package broker
 
@@ -238,9 +240,59 @@ func SavePolicy(profile string, p *Policy) error {
 	return os.WriteFile(PolicyPath(profile), data, 0o644)
 }
 
-// checkAPI returns (allowed, reason). Owner is checked first; then deny rules.
-// An empty owner (e.g. paths under /user) skips the owner check.
+// apiTopLevel lists the REST path prefixes the broker forwards. Anything else
+// is denied, because a path the broker doesn't understand can't be checked:
+// /repositories/<id>/... for example reaches any repository by numeric ID,
+// with no owner in the path and no deny rule matching. /graphql is checked
+// separately by checkGraphQL, since its operation is in the body.
+var apiTopLevel = map[string]bool{
+	"": true, "repos": true, "user": true, "users": true, "orgs": true,
+	"search": true, "rate_limit": true, "meta": true, "markdown": true,
+	"emojis": true, "licenses": true, "gitignore": true, "codes_of_conduct": true,
+	"octocat": true, "zen": true, "notifications": true, "gists": true,
+	"events": true, "feeds": true, "versions": true,
+}
+
+// checkAPIPath refuses paths that could match differently here than at
+// GitHub: empty segments (a trailing slash would dodge "/repos/*/*"), dot
+// segments, and characters that change meaning when the path is forwarded,
+// such as a decoded %3F turning the rest of the path into a query string.
+func checkAPIPath(path string) (bool, string) {
+	if path == "/" {
+		return true, ""
+	}
+	if strings.ContainsAny(path, "?#%\\") {
+		return false, "path contains characters the broker can't check safely"
+	}
+	for _, r := range path {
+		if r <= ' ' || r == 0x7f {
+			return false, "path contains whitespace or control characters"
+		}
+	}
+	for _, seg := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false, "path has an empty or dot segment"
+		}
+	}
+	return true, ""
+}
+
+// checkAPI returns (allowed, reason) for a REST call. The path must be
+// canonical and under a known prefix. Owner is checked next, then deny rules.
+// An empty owner (e.g. paths under /user) skips the owner check. Matching
+// ignores case, so /Repos/o/r/Hooks can't dodge a rule.
 func (p *Policy) checkAPI(method, path string) (bool, string) {
+	if ok, reason := checkAPIPath(path); !ok {
+		return false, reason
+	}
+	path = strings.ToLower(path)
+	top := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 2)[0]
+	if top == "graphql" {
+		return false, "graphql requests are checked by their body"
+	}
+	if !apiTopLevel[top] {
+		return false, fmt.Sprintf("unrecognized API path /%s/...: the broker only forwards paths it can check", top)
+	}
 	if owner := extractAPIOwner(path); owner != "" {
 		if !ContainsFold(p.AllowedOwners, owner) {
 			return false, fmt.Sprintf("owner %q not in allowed_owners %v", owner, p.AllowedOwners)
@@ -253,7 +305,7 @@ func (p *Policy) checkAPI(method, path string) (bool, string) {
 		if r.Method != "" && !strings.EqualFold(r.Method, method) {
 			continue
 		}
-		if r.PathGlob != "" && !matchGlob(r.PathGlob, path) {
+		if r.PathGlob != "" && !matchGlob(strings.ToLower(r.PathGlob), path) {
 			continue
 		}
 		return false, fmt.Sprintf("%s: %s", r.ID, r.Reason)
