@@ -134,7 +134,7 @@ func (b *broker) handleFly(w http.ResponseWriter, r *http.Request) {
 	profile, policy, err := b.authProfileFromBearer(r)
 	if err != nil {
 		b.audit(auditEntry{Profile: authFailProfile(profile), Surface: "FLY", Method: r.Method, Path: r.URL.Path, Action: "AUTH", Detail: err.Error()})
-		b.errorResponse(w, http.StatusForbidden, "broker: "+err.Error())
+		b.errorResponse(w, r, http.StatusForbidden, "broker: "+err.Error())
 		return
 	}
 	upstreamPath := strings.TrimPrefix(r.URL.Path, "/fly")
@@ -144,25 +144,25 @@ func (b *broker) handleFly(w http.ResponseWriter, r *http.Request) {
 
 	if policy.FlyPolicy == nil {
 		b.audit(auditEntry{Profile: profile, Surface: "FLY", Method: r.Method, Path: upstreamPath, Action: "DENY", Detail: "no fly_policy configured"})
-		b.denyResponse(w, "no fly_policy configured for this profile")
+		b.denyResponse(w, r, "no fly_policy configured for this profile")
 		return
 	}
 	if !matchAllowedEndpoint(policy.FlyPolicy.AllowedEndpoints, r.Method, upstreamPath) {
 		b.audit(auditEntry{Profile: profile, Surface: "FLY", Method: r.Method, Path: upstreamPath, Action: "DENY", Detail: "no allowed_endpoints match"})
-		b.denyResponse(w, fmt.Sprintf("no fly_policy.allowed_endpoints rule matches %s %s", r.Method, upstreamPath))
+		b.denyResponse(w, r, fmt.Sprintf("no fly_policy.allowed_endpoints rule matches %s %s", r.Method, upstreamPath))
 		return
 	}
 	if app := extractFlyApp(upstreamPath); app != "" {
 		if !policy.FlyPolicy.allowsApp(app) {
 			b.audit(auditEntry{Profile: profile, Surface: "FLY", Method: r.Method, Path: upstreamPath, Action: "DENY", Detail: fmt.Sprintf("app %q not in allowed_apps", app)})
-			b.denyResponse(w, fmt.Sprintf("fly app %q not in allowed_apps %v", app, policy.FlyPolicy.AllowedApps))
+			b.denyResponse(w, r, fmt.Sprintf("fly app %q not in allowed_apps %v", app, policy.FlyPolicy.AllowedApps))
 			return
 		}
 	}
 
 	pt, _ := getProfileTokens(profile)
 	if pt.Fly == "" {
-		b.errorResponse(w, http.StatusBadGateway,
+		b.errorResponse(w, r, http.StatusBadGateway,
 			fmt.Sprintf("no fly upstream token configured for %q. Set with: colimander tokens set %s fly <fly-token>", profile, profile))
 		return
 	}
@@ -176,7 +176,7 @@ func (b *broker) handleDoppler(w http.ResponseWriter, r *http.Request) {
 	profile, policy, err := b.authProfileFromBearer(r)
 	if err != nil {
 		b.audit(auditEntry{Profile: authFailProfile(profile), Surface: "DOPPLER", Method: r.Method, Path: r.URL.Path, Action: "AUTH", Detail: err.Error()})
-		b.errorResponse(w, http.StatusForbidden, "broker: "+err.Error())
+		b.errorResponse(w, r, http.StatusForbidden, "broker: "+err.Error())
 		return
 	}
 	upstreamPath := strings.TrimPrefix(r.URL.Path, "/doppler")
@@ -186,12 +186,12 @@ func (b *broker) handleDoppler(w http.ResponseWriter, r *http.Request) {
 
 	if policy.DopplerPolicy == nil {
 		b.audit(auditEntry{Profile: profile, Surface: "DOPPLER", Method: r.Method, Path: upstreamPath, Action: "DENY", Detail: "no doppler_policy configured"})
-		b.denyResponse(w, "no doppler_policy configured for this profile")
+		b.denyResponse(w, r, "no doppler_policy configured for this profile")
 		return
 	}
 	if !matchAllowedEndpoint(policy.DopplerPolicy.AllowedEndpoints, r.Method, upstreamPath) {
 		b.audit(auditEntry{Profile: profile, Surface: "DOPPLER", Method: r.Method, Path: upstreamPath, Action: "DENY", Detail: "no allowed_endpoints match"})
-		b.denyResponse(w, fmt.Sprintf("no doppler_policy.allowed_endpoints rule matches %s %s", r.Method, upstreamPath))
+		b.denyResponse(w, r, fmt.Sprintf("no doppler_policy.allowed_endpoints rule matches %s %s", r.Method, upstreamPath))
 		return
 	}
 	// Doppler's project is carried as a query parameter on most endpoints.
@@ -201,18 +201,18 @@ func (b *broker) handleDoppler(w http.ResponseWriter, r *http.Request) {
 	if project := r.URL.Query().Get("project"); project != "" {
 		if !ContainsFold(policy.DopplerPolicy.AllowedProjects, project) {
 			b.audit(auditEntry{Profile: profile, Surface: "DOPPLER", Method: r.Method, Path: upstreamPath, Action: "DENY", Detail: fmt.Sprintf("project %q not in allowed_projects", project)})
-			b.denyResponse(w, fmt.Sprintf("doppler project %q not in allowed_projects %v", project, policy.DopplerPolicy.AllowedProjects))
+			b.denyResponse(w, r, fmt.Sprintf("doppler project %q not in allowed_projects %v", project, policy.DopplerPolicy.AllowedProjects))
 			return
 		}
 	} else if requiresDopplerProject(upstreamPath) {
 		b.audit(auditEntry{Profile: profile, Surface: "DOPPLER", Method: r.Method, Path: upstreamPath, Action: "DENY", Detail: "missing project query param"})
-		b.denyResponse(w, "endpoint requires `project` query parameter to be set, and matched against allowed_projects")
+		b.denyResponse(w, r, "endpoint requires `project` query parameter to be set, and matched against allowed_projects")
 		return
 	}
 
 	pt, _ := getProfileTokens(profile)
 	if pt.Doppler == "" {
-		b.errorResponse(w, http.StatusBadGateway,
+		b.errorResponse(w, r, http.StatusBadGateway,
 			fmt.Sprintf("no doppler upstream token configured for %q. Set with: colimander tokens set %s doppler <doppler-token>", profile, profile))
 		return
 	}
@@ -236,7 +236,7 @@ func requiresDopplerProject(path string) bool {
 func (b *broker) proxyTo(w http.ResponseWriter, r *http.Request, base, upstreamPath, upstreamToken, surface, profile string) {
 	target, err := url.Parse(base)
 	if err != nil {
-		b.errorResponse(w, http.StatusInternalServerError, err.Error())
+		b.errorResponse(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 	proxy := &httputil.ReverseProxy{
@@ -252,7 +252,7 @@ func (b *broker) proxyTo(w http.ResponseWriter, r *http.Request, base, upstreamP
 		},
 		FlushInterval: -1,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-			b.errorResponse(w, http.StatusBadGateway, "upstream: "+err.Error())
+			b.errorResponse(w, r, http.StatusBadGateway, "upstream: "+err.Error())
 		},
 	}
 	proxy.ServeHTTP(w, r)

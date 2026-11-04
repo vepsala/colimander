@@ -175,19 +175,61 @@ func (b *broker) audit(e auditEntry) {
 
 // ----------------------------- handlers -------------------------------------
 
-func (b *broker) denyResponse(w http.ResponseWriter, reason string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusForbidden)
-	json.NewEncoder(w).Encode(map[string]string{
-		"error":  "colimander policy denied this operation",
-		"reason": reason,
-	})
+// Responses explain themselves to the agent in the VM. Agents tend to read a
+// 403 as GitHub (or Fly, or Doppler) refusing, then retry, hunt for another
+// token or rewrite the remote URL. So every refusal says it came from the
+// Colimander broker and what to do instead. Each surface uses the field its
+// client actually prints: git shows a text/plain body as "remote: ...", gh
+// shows "message", flyctl "error", and the Doppler CLI "messages".
+
+const brokerNotice = "This sandbox doesn't talk to %s directly: requests go through the Colimander broker on the user's Mac (host.lima.internal:8765), which holds the credentials and blocks some operations."
+
+// surfaceHint returns the service name and what to do instead, by path.
+func surfaceHint(path string) (service, hint string) {
+	switch {
+	case strings.HasPrefix(path, "/fly"):
+		return "Fly.io", "Retrying or changing settings won't help. For this operation, ask the user for a short-lived Fly token (they can create one in the Colimander app under Fly tokens) and use it with flyctl directly."
+	case strings.HasPrefix(path, "/doppler"):
+		return "Doppler", "Retrying or changing settings won't help. Ask the user to do this on their Mac."
+	default:
+		return "GitHub", "There is no GitHub token in this VM, and retrying, using a different token or changing the remote URL won't help. Leave remotes as https://github.com/<owner>/<repo>.git so they go through the broker. If this operation is really needed, ask the user to do it on their Mac."
+	}
 }
 
-func (b *broker) errorResponse(w http.ResponseWriter, status int, msg string) {
+// denyResponse refuses a request that policy doesn't allow.
+func (b *broker) denyResponse(w http.ResponseWriter, r *http.Request, reason string) {
+	service, hint := surfaceHint(r.URL.Path)
+	msg := fmt.Sprintf("Denied by the Colimander broker, not by %s: %s. %s %s", service, reason, fmt.Sprintf(brokerNotice, service), hint)
+	b.writeBrokerError(w, r, http.StatusForbidden, msg, reason)
+}
+
+// errorResponse reports a broker-side failure, such as a failed handle check or
+// an upstream that couldn't be reached.
+func (b *broker) errorResponse(w http.ResponseWriter, r *http.Request, status int, msg string) {
+	service, _ := surfaceHint(r.URL.Path)
+	full := fmt.Sprintf("Colimander broker error (not from %s): %s. %s", service, strings.TrimPrefix(msg, "broker: "), fmt.Sprintf(brokerNotice, service))
+	if status == http.StatusForbidden {
+		full += " The sandbox's broker credentials didn't match, which usually means the sandbox needs `colimander broker rewire <name>` run on the Mac; ask the user."
+	}
+	b.writeBrokerError(w, r, status, full, msg)
+}
+
+func (b *broker) writeBrokerError(w http.ResponseWriter, r *http.Request, status int, msg, reason string) {
+	if strings.HasPrefix(r.URL.Path, "/git/") {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(status)
+		fmt.Fprintln(w, msg)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	json.NewEncoder(w).Encode(map[string]any{
+		"message":  msg,           // gh and other GitHub clients
+		"error":    msg,           // flyctl
+		"messages": []string{msg}, // Doppler CLI
+		"reason":   reason,
+		"broker":   "colimander",
+	})
 }
 
 // authFailProfile labels the profile column of an auth-failure audit entry:
@@ -232,7 +274,7 @@ func (b *broker) handleAPI(w http.ResponseWriter, r *http.Request) {
 	profile, policy, err := b.authProfile(r)
 	if err != nil {
 		b.audit(auditEntry{Profile: authFailProfile(profile), Surface: "API", Method: r.Method, Path: upstreamPath, Action: "AUTH", Detail: err.Error()})
-		b.errorResponse(w, http.StatusForbidden, "broker: "+err.Error())
+		b.errorResponse(w, r, http.StatusForbidden, "broker: "+err.Error())
 		return
 	}
 
@@ -245,7 +287,7 @@ func (b *broker) handleAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok {
 		b.audit(auditEntry{Profile: profile, Surface: "API", Method: r.Method, Path: upstreamPath, Action: "DENY", Detail: reason})
-		b.denyResponse(w, reason)
+		b.denyResponse(w, r, reason)
 		return
 	}
 
@@ -255,13 +297,13 @@ func (b *broker) handleAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	req, err := http.NewRequest(r.Method, upstream, body)
 	if err != nil {
-		b.errorResponse(w, http.StatusInternalServerError, err.Error())
+		b.errorResponse(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 	copyHeadersExceptAuth(req.Header, r.Header)
 	tokn, err := b.githubToken()
 	if err != nil {
-		b.errorResponse(w, http.StatusBadGateway, err.Error())
+		b.errorResponse(w, r, http.StatusBadGateway, err.Error())
 		return
 	}
 	req.Header.Set("Authorization", "token "+tokn)
@@ -269,7 +311,7 @@ func (b *broker) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		b.errorResponse(w, http.StatusBadGateway, err.Error())
+		b.errorResponse(w, r, http.StatusBadGateway, err.Error())
 		return
 	}
 	defer resp.Body.Close()
@@ -285,7 +327,7 @@ func (b *broker) handleGit(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/git/")
 	parts := strings.SplitN(rest, "/", 3)
 	if len(parts) < 3 {
-		b.errorResponse(w, http.StatusBadRequest, fmt.Sprintf("git path must look like /git/<owner>/<repo>[.git]/<endpoint>, got %q", r.URL.Path))
+		b.errorResponse(w, r, http.StatusBadRequest, fmt.Sprintf("git path must look like /git/<owner>/<repo>[.git]/<endpoint>, got %q", r.URL.Path))
 		return
 	}
 	// GitHub accepts clone URLs with or without the .git suffix, and some
@@ -301,13 +343,13 @@ func (b *broker) handleGit(w http.ResponseWriter, r *http.Request) {
 	profile, policy, err := b.authProfile(r)
 	if err != nil {
 		b.audit(auditEntry{Profile: authFailProfile(profile), Surface: "GIT", Method: r.Method, Path: upstreamPath, Action: "AUTH", Detail: err.Error()})
-		b.errorResponse(w, http.StatusForbidden, "broker: "+err.Error())
+		b.errorResponse(w, r, http.StatusForbidden, "broker: "+err.Error())
 		return
 	}
 
 	if ok, reason := policy.checkGitOwner(owner); !ok {
 		b.audit(auditEntry{Profile: profile, Surface: "GIT", Method: r.Method, Path: upstreamPath, Action: "DENY", Detail: reason})
-		b.denyResponse(w, reason)
+		b.denyResponse(w, r, reason)
 		return
 	}
 
@@ -319,12 +361,12 @@ func (b *broker) handleGit(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost && endpoint == "git-receive-pack" {
 		if ok, reason := policy.checkGitPush("/" + owner + "/" + repo); !ok {
 			b.audit(auditEntry{Profile: profile, Surface: "GIT", Method: r.Method, Path: upstreamPath, Action: "DENY", Detail: reason})
-			b.denyResponse(w, reason)
+			b.denyResponse(w, r, reason)
 			return
 		}
 		bodyBuf, err = io.ReadAll(r.Body)
 		if err != nil {
-			b.errorResponse(w, http.StatusBadRequest, "read push body: "+err.Error())
+			b.errorResponse(w, r, http.StatusBadRequest, "read push body: "+err.Error())
 			return
 		}
 		updates := parseReceivePackCommands(bodyBuf)
@@ -334,7 +376,7 @@ func (b *broker) handleGit(w http.ResponseWriter, r *http.Request) {
 			}
 			if ok, reason := policy.checkGitDelete(u.Ref); !ok {
 				b.audit(auditEntry{Profile: profile, Surface: "GIT", Method: r.Method, Path: upstreamPath, Action: "DENY", Detail: reason})
-				b.denyResponse(w, reason)
+				b.denyResponse(w, r, reason)
 				return
 			}
 		}
@@ -350,13 +392,13 @@ func (b *broker) handleGit(w http.ResponseWriter, r *http.Request) {
 	}
 	req, err := http.NewRequest(r.Method, upstream, upstreamBody)
 	if err != nil {
-		b.errorResponse(w, http.StatusInternalServerError, err.Error())
+		b.errorResponse(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 	copyHeadersExceptAuth(req.Header, r.Header)
 	token, err := b.githubToken()
 	if err != nil {
-		b.errorResponse(w, http.StatusBadGateway, err.Error())
+		b.errorResponse(w, r, http.StatusBadGateway, err.Error())
 		return
 	}
 	// GitHub git smart-HTTP wants HTTP Basic; the magic username "x-access-token"
@@ -365,7 +407,7 @@ func (b *broker) handleGit(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		b.errorResponse(w, http.StatusBadGateway, err.Error())
+		b.errorResponse(w, r, http.StatusBadGateway, err.Error())
 		return
 	}
 	defer resp.Body.Close()
@@ -537,7 +579,7 @@ func (b *broker) vmHandler() http.Handler {
 		fmt.Fprintln(w, "ok")
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		b.errorResponse(w, http.StatusNotFound, "broker: unknown path "+r.URL.Path)
+		b.errorResponse(w, r, http.StatusNotFound, "broker: unknown path "+r.URL.Path)
 	})
 	return mux
 }
