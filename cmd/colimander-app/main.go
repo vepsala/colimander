@@ -55,7 +55,10 @@ func main() {
 		MinWidth:    640,
 		MinHeight:   400,
 		AssetServer: &assetserver.Options{Handler: withNative(appui.Handler(broker.ControlSocket(), broker.DBAdminSocket()), &appCtx)},
-		OnStartup:   func(ctx context.Context) { appCtx = ctx },
+		OnStartup: func(ctx context.Context) {
+			appCtx = ctx
+			go watchApprovals(ctx, broker.DBAdminSocket())
+		},
 		Mac: &mac.Options{
 			TitleBar: mac.TitleBarHiddenInset(),
 		},

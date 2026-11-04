@@ -86,6 +86,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/connections/{id}/resume", s.requireAuth(s.handleResume))
 	mux.Handle("GET /api/security-events", s.requireAuth(s.handleSecurityEvents))
 	mux.Handle("GET /api/approvals", s.requireAuth(s.handleApprovals))
+	mux.Handle("GET /api/approvals/watch", s.requireAuth(s.handleApprovalsWatch))
 	mux.Handle("POST /api/approvals/{id}", s.requireAuth(s.handleDecide))
 	return mux
 }
@@ -623,6 +624,27 @@ func (s *Server) handleApprovals(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.broker.Pending())
+}
+
+// handleApprovalsWatch is a long poll for the number of pending approvals. It
+// answers as soon as the state differs from ?after=<version>, or after about
+// 25 seconds with the current state, and the client asks again with the
+// version it got. ?after=0 (or none) answers at once.
+func (s *Server) handleApprovalsWatch(w http.ResponseWriter, r *http.Request) {
+	after, _ := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64)
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+	if s.broker == nil {
+		// Without dashboard approvals nothing ever waits; still hold the
+		// request, so a client's loop doesn't spin.
+		if after != 0 {
+			<-ctx.Done()
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"version": 1, "pending": 0})
+		return
+	}
+	version, count := s.broker.Watch(ctx, after)
+	writeJSON(w, http.StatusOK, map[string]any{"version": version, "pending": count})
 }
 
 // handleDecide resolves a pending approval.

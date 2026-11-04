@@ -14,6 +14,11 @@ type Broker struct {
 	mu      sync.Mutex
 	pending map[string]*pendingReq
 	timeout time.Duration
+
+	// version counts changes to pending, and changed is closed (and replaced)
+	// on each one, which wakes every Watch at once.
+	version uint64
+	changed chan struct{}
 }
 
 type pendingReq struct {
@@ -41,7 +46,7 @@ func NewBroker(timeout time.Duration) *Broker {
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
 	}
-	return &Broker{pending: map[string]*pendingReq{}, timeout: timeout}
+	return &Broker{pending: map[string]*pendingReq{}, timeout: timeout, changed: make(chan struct{})}
 }
 
 // Approve registers the request as pending and blocks until it is decided in the
@@ -51,11 +56,13 @@ func (b *Broker) Approve(ctx context.Context, req Request) Decision {
 
 	b.mu.Lock()
 	b.pending[req.ID] = p
+	b.bumpLocked()
 	b.mu.Unlock()
 
 	defer func() {
 		b.mu.Lock()
 		delete(b.pending, req.ID)
+		b.bumpLocked()
 		b.mu.Unlock()
 	}()
 
@@ -69,6 +76,33 @@ func (b *Broker) Approve(ctx context.Context, req Request) Decision {
 		return Decision{Approved: false, Reason: "timed out waiting for dashboard approval"}
 	case <-ctx.Done():
 		return Decision{Approved: false, Reason: "client disconnected"}
+	}
+}
+
+func (b *Broker) bumpLocked() {
+	b.version++
+	close(b.changed)
+	b.changed = make(chan struct{})
+}
+
+// Watch waits until the set of pending requests differs from version after,
+// or ctx ends, and returns the current version and count. Pass 0 the first
+// time to get the current state at once. It lets a client keep a pending count
+// up to date without polling.
+func (b *Broker) Watch(ctx context.Context, after uint64) (version uint64, count int) {
+	for {
+		b.mu.Lock()
+		version, count, ch := b.version+1, len(b.pending), b.changed
+		b.mu.Unlock()
+		// Versions handed out start at 1, so 0 always differs.
+		if version != after {
+			return version, count
+		}
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return version, count
+		}
 	}
 }
 

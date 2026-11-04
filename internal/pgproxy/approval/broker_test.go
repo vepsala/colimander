@@ -70,3 +70,38 @@ func waitPending(t *testing.T, b *Broker, n int) {
 	}
 	t.Fatalf("timed out waiting for %d pending", n)
 }
+
+func TestWatchWakesOnChange(t *testing.T) {
+	b := NewBroker(time.Minute)
+	v0, n := b.Watch(context.Background(), 0)
+	if n != 0 {
+		t.Fatalf("count = %d", n)
+	}
+	// Nothing changes: Watch holds until the context ends.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	if v, _ := b.Watch(ctx, v0); v != v0 {
+		t.Errorf("version moved without a change")
+	}
+	cancel()
+
+	got := make(chan int, 1)
+	go func() { _, n := b.Watch(context.Background(), v0); got <- n }()
+	reqCtx, stop := context.WithCancel(context.Background())
+	go b.Approve(reqCtx, Request{ID: "a"})
+	select {
+	case n := <-got:
+		if n != 1 {
+			t.Errorf("pending = %d, want 1", n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Watch didn't wake when a request arrived")
+	}
+
+	v1, _ := b.Watch(context.Background(), 0)
+	stop() // the request ends
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	if v, n := b.Watch(ctx2, v1); v == v1 || n != 0 {
+		t.Errorf("after the request ended: version %d (was %d), pending %d", v, v1, n)
+	}
+}
