@@ -50,6 +50,9 @@ type Decision struct {
 	// UserFunction reports a call to a non-built-in function outside strict
 	// mode. It may write or read anything, so it needs approval like a mutation.
 	UserFunction bool
+	// UserFunctions names the custom functions called, lower-case and
+	// schema-qualified as written (e.g. "graphile_worker.add_job").
+	UserFunctions []string
 	// Unknown lists relations missing from the catalog. The catalog may be
 	// stale: callers should refresh it and check again.
 	Unknown []string
@@ -172,6 +175,7 @@ func Check(sql string, rules Rules, cat Catalog) Decision {
 	}
 	if !c.strict && len(c.userFuncs) > 0 {
 		d.UserFunction = true
+		d.UserFunctions = c.userFuncs
 		d.Kind = policy.KindMutation
 	}
 
@@ -399,7 +403,7 @@ func (c *checker) global(root proto.Message) {
 				c.block("%s: %s", name, msg)
 			}
 			if c.cat.UserFuncs[name] {
-				c.userFuncs = append(c.userFuncs, name)
+				c.userFuncs = append(c.userFuncs, qualifiedFuncName(n))
 			}
 		}
 	})
@@ -551,6 +555,16 @@ func funcName(fn *pg.FuncCall) string {
 		return ""
 	}
 	return strings.ToLower(fn.Funcname[len(fn.Funcname)-1].GetString_().GetSval())
+}
+
+// qualifiedFuncName is the function name as written, lower-case, with its
+// schema if the call gave one.
+func qualifiedFuncName(fn *pg.FuncCall) string {
+	parts := make([]string, 0, len(fn.Funcname))
+	for _, p := range fn.Funcname {
+		parts = append(parts, strings.ToLower(p.GetString_().GetSval()))
+	}
+	return strings.Join(parts, ".")
 }
 
 func lastPart(qualified string) string {

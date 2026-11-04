@@ -266,6 +266,12 @@ Finnish personal IDs, IBANs, card numbers and API keys.
 Connections run read-only until a write is approved, and superuser upstream roles
 are refused.
 
+Custom functions (anything outside `pg_catalog`) count as writes, since they can
+do anything. With approvals on they need approval; with approvals off they're
+blocked. The exceptions are `graphile_worker.add_job` and `add_jobs`, which run
+without approval on connections with approvals off. The call has to name the schema, and it's
+still refused in a statement that reads a table with PII.
+
 ### Tripwire
 
 Attempting something no honest agent needs (`pg_read_file`, `dblink`, `COPY ...

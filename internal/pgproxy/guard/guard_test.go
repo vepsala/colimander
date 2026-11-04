@@ -225,3 +225,21 @@ func TestAllowRuleClearsAColumn(t *testing.T) {
 		t.Errorf("the broad rule should still cover orders.email, got %v", got)
 	}
 }
+
+func TestUserFunctionsAreNamedWithTheirSchema(t *testing.T) {
+	cat := testCatalog()
+	cat.UserFuncs["add_job"] = true
+	d := Check(`select graphile_worker.add_job('send_email', json_build_object('id', 1))`, testRules(), cat)
+	if d.Severity != Allow || !d.UserFunction || len(d.UserFunctions) != 1 || d.UserFunctions[0] != "graphile_worker.add_job" {
+		t.Errorf("qualified call: %+v", d)
+	}
+	d = Check(`select add_job('send_email')`, testRules(), cat)
+	if len(d.UserFunctions) != 1 || d.UserFunctions[0] != "add_job" {
+		t.Errorf("unqualified call: %+v", d)
+	}
+	// With a PII table in the statement, it's still refused.
+	d = Check(`select graphile_worker.add_job('x', json_build_object('e', email)) from users`, testRules(), cat)
+	if d.Severity != Block {
+		t.Errorf("add_job over PII should be blocked: %+v", d)
+	}
+}

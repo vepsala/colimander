@@ -208,10 +208,32 @@ func (s *session) check(ctx context.Context, sql string) guard.Decision {
 	return decision
 }
 
+// noApprovalFunctions may run on connections with approvals turned off, where
+// other custom functions are blocked. Graphile Worker's add_job and add_jobs
+// only queue jobs, and apps call them constantly. The call must name the schema, so a
+// same-named function elsewhere on the search path doesn't qualify. With
+// approvals on, these still need approval like any custom function.
+var noApprovalFunctions = map[string]bool{
+	"graphile_worker.add_job":  true,
+	"graphile_worker.add_jobs": true,
+}
+
+func onlyNoApprovalFunctions(names []string) bool {
+	if len(names) == 0 {
+		return false
+	}
+	for _, n := range names {
+		if !noApprovalFunctions[n] {
+			return false
+		}
+	}
+	return true
+}
+
 // allowed acts on a guard decision. It returns true if the statement may run;
 // otherwise it has queued the error, and the caller just stops.
 func (s *session) allowed(d guard.Decision, sql string) bool {
-	if d.Severity == guard.Allow && d.UserFunction && !s.policy.GateMutations() {
+	if d.Severity == guard.Allow && d.UserFunction && !s.policy.GateMutations() && !onlyNoApprovalFunctions(d.UserFunctions) {
 		d.Severity = guard.Block
 		d.Message = "custom functions need approval, and this connection has approvals turned off"
 	}
