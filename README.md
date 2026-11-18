@@ -7,7 +7,7 @@ Overview site: <https://vepsala.github.io/colimander/>
 ## Why this exists
 This is a local tool I created for myself, because orchestrating multiple dev environments is annoying locally. I have experimented also with fly's sprites and hetzner, but so far I have not had the time to do that properly. This same approach would work great on any other machines too, but this version is for macos.
 
-I don't suggest anyone to use this blindly. I made this public because I thought it could be useful for someone to see, "food for thought". 
+I built it for myself. Run it at your own risk. MIT licensed. Fork it, read it, steal it, do what you want.
 
 ## What's in it
 
@@ -74,25 +74,25 @@ Everything from here on is auto generated with LLM and I barely read it:
 
 ## Why this exists
 
-I work on 3-5 projects in parallel. My machine is an M3 with 36 GB of RAM. It's not enough to keep five fully-provisioned dev environments running at once — language servers, Postgres, browsers, agent VMs all stacked. So today I run 1-2 "safe" environments and use unsafe shortcuts (host credentials, host filesystem, no isolation) on the other 2-3 that I'm only touching occasionally.
+I work on 3 projects in parallel. My machine is an M3 with 36 GB of RAM, which isn't enough to keep three fully-provisioned dev environments running at once, with language servers, Postgres, browsers and agent VMs all stacked. So before this I ran 1-2 "safe" environments and used unsafe shortcuts (host credentials, host filesystem, no isolation) on the ones I only touched occasionally.
 
-I don't want to give up local-first development. Agents like Claude Code thrive when they can see and use the full environment — language servers, real databases, real tools. The cloud-sandbox version is always a step behind. The cost is that "local-first agentic development" is currently synonymous with "the agent has access to your real GitHub token, your real DB password, your real filesystem."
+I don't want to give up local-first development. Agents like Claude Code thrive when they can see and use the full environment: language servers, real databases, real tools. The cloud-sandbox version is always a step behind. The cost is that "local-first agentic development" is currently synonymous with "the agent has access to your real GitHub token, your real DB password, your real filesystem."
 
 The two halves of the chore are:
 
-1. **Lifecycle ergonomics** — spinning up, swapping between, and tearing down environments without losing track of what's where, on a machine where you can't keep all of them hot.
-2. **Safety without overhead** — being able to run `claude --dangerously-skip-permissions` in any of them without holding your breath.
+1. **Lifecycle ergonomics:** spinning up, swapping between, and tearing down environments without losing track of what's where, on a machine where you can't keep all of them hot.
+2. **Safety without overhead:** being able to run `claude --dangerously-skip-permissions` in any of them with less at stake.
 
 Colimander tackles both:
 
 - Each project is a one-command Colima VM with edit-over-SSH (no host bind-mount), fast start/stop/recreate, predictable ports, and a stable `.local` hostname for browser access. Easy enough that you actually do it for every project, not just the important ones.
-- All sensitive outbound traffic — git operations, LLM API keys, prod databases — is routed through a host-side broker that holds the real credentials. The VM only ever sees inert local handles. A leaked handle is useless off-host.
+- All sensitive outbound traffic (git operations, LLM API keys, prod databases) is routed through a host-side broker that holds the real credentials. The VM only ever sees inert local handles. A leaked handle is useless off-host.
 
-The broker is what lets us *relax* the rest of the sandbox. Most agent-sandbox setups need egress allow-lists, DNS filtering, iptables rules — because they're trying to prevent credential exfiltration at the network layer. If the credential the agent has access to doesn't work off your machine in the first place, you don't need that ceremony. The VM can have wide network access; the interesting things are gated at the broker.
+The broker is what lets us *relax* the rest of the sandbox. Most agent-sandbox setups need egress allow-lists, DNS filtering, iptables rules, because they're trying to prevent credential exfiltration at the network layer. If the credential the agent has access to doesn't work off your machine in the first place, a leaked credential matters much less. The VM can have wider network access, and the sensitive operations are gated at the broker. That doesn't stop other kinds of damage, like leaking your code or data.
 
 ### What "scoped" actually means
 
-A concrete example. GitHub's permission model — even fine-grained PATs — caps out at "this token can read/write these repos with these permissions." GitHub Apps can be more precise but you need to install them per org, which is heavyweight when you collaborate across orgs you don't control. Forgejo has similar limitations.
+A concrete example. GitHub's permission model, even with fine-grained PATs, caps out at "this token can read/write these repos with these permissions." GitHub Apps can be more precise but you need to install them per org, which is heavyweight when you collaborate across orgs you don't control. Forgejo has similar limitations.
 
 Colimander's broker can enforce policies the platform itself doesn't expose. For example:
 
@@ -103,11 +103,11 @@ Colimander's broker can enforce policies the platform itself doesn't expose. For
 
 The broker holds your real PAT (or App credentials, or Forgejo token) and acts as a policy-enforcing reverse proxy in front of `api.github.com` / your Forgejo host. The agent in the VM gets a handle that only this proxy honors, and only for operations the proxy allows.
 
-This is what makes `--dangerously-skip-permissions` actually defensible: not because the agent is well-behaved, but because the worst it can do is bounded by the policy.
+This is why I'm more comfortable running `--dangerously-skip-permissions`: not because the agent is well-behaved, but because what it can do with the credentials is limited by the policy. It can still do anything the policy allows, and anything inside the VM.
 
 ## The design in one paragraph
 
-Each project is a Colima profile — its own VM, its own disk, its own Docker context. The VM has no host bind-mount; you edit files via SSH-remote in Zed/VS Code/Cursor/JetBrains. Real secrets live in macOS Keychain on the host. The VM gets local-only handles (e.g., a Postgres DSN pointing at a host-only IP, a placeholder GitHub token). A host daemon listens on a per-profile gateway address and brokers connections — swapping in the real credential, optionally enforcing scope (read-only DB, allowed GitHub paths). Leak a handle and it's inert outside this machine. Rotate a secret and nothing in the VM has to change.
+Each project is a Colima profile: its own VM, its own disk, its own Docker context. The VM has no host bind-mount; you edit files via SSH-remote in Zed/VS Code/Cursor/JetBrains. Real secrets live in macOS Keychain on the host. The VM gets local-only handles (e.g., a Postgres DSN pointing at a host-only IP, a placeholder GitHub token). A host daemon listens on a per-profile gateway address and brokers connections, swapping in the real credential, optionally enforcing scope (read-only DB, allowed GitHub paths). Leak a handle and it's inert outside this machine. Rotate a secret and nothing in the VM has to change.
 
 ## The pieces
 
@@ -121,10 +121,10 @@ Provisioning uses Colima's declarative `provision:` blocks (cloud-init-style, id
 
 ### 2. No host bind-mount, edit-over-SSH
 
-No host home bind-mount. Project files live only inside the VM disk. (Colima always mounts its own image cache read-only — that's unavoidable without bypassing Colima, but the cache contains only downloaded VM images, no user files.) You import a project by either:
+No host home bind-mount. Project files live only inside the VM disk. (Colima always mounts its own image cache read-only. That's unavoidable without bypassing Colima, but the cache contains only downloaded VM images, no user files.) You import a project by either:
 
-- `colimander create myproj --from-repo git@github.com:you/myproj` — the VM clones it on first boot, via the proxy.
-- `colimander create myproj --import-dir ~/code/myproj` — one-shot `limactl cp` at creation; the host copy is no longer touched after.
+- `colimander create myproj --from-repo git@github.com:you/myproj`: the VM clones it on first boot, via the proxy.
+- `colimander create myproj --import-dir ~/code/myproj`: one-shot `limactl cp` at creation; the host copy is no longer touched after.
 
 Editing happens via SSH-remote from your editor (Zed, VS Code, Cursor, JetBrains all work). Add this to `~/.ssh/config`:
 
@@ -201,7 +201,7 @@ colimander secret unbind NAME --profile foo
 
 `ls` shows: name, profile, kind, mode, TTL remaining, last used, usage count, whether the listener is live.
 
-`swap` is the headline win — update Keychain, broker reloads, nothing in the VM changes. No VM restart, no manual `~/.git-credentials` fix-up.
+`swap` is the headline win: update Keychain, broker reloads, nothing in the VM changes. No VM restart, no manual `~/.git-credentials` fix-up.
 
 `show` defaults to printing the local handle (safe to display). `--reveal` prints the real value behind a macOS Touch ID prompt, so a compromised in-VM agent that gains a shell back to the host can't silently exfiltrate by calling the CLI in a loop.
 
@@ -209,7 +209,7 @@ colimander secret unbind NAME --profile foo
 
 `colimander scale myproj --memory 16 --disk 80` runs the stop / restart-with-new-values dance. Memory and CPU are easy. Disk is grow-only (Colima limit).
 
-`colimander health` (or a tray-bar indicator) polls `free`, `df`, container counts over SSH and warns when a profile crosses 80% RAM or disk — so you resize *before* the OOM killer eats your work, not after.
+`colimander health` (or a tray-bar indicator) polls `free`, `df`, container counts over SSH and warns when a profile crosses 80% RAM or disk, so you resize *before* the OOM killer eats your work, not after.
 
 ## Threat model
 
@@ -237,29 +237,29 @@ If you fork this and want a starting point on things I haven't decided:
 
 ## Status
 
-v0. The daemon is described above. What's working in the lifecycle CLI, validated end-to-end on macOS with an actual VM boot:
+The daemon is described above. What's working in the lifecycle CLI, validated end-to-end on macOS with an actual VM boot:
 
-- `colimander create <name> [--cpu N --memory G --disk G --start]` — writes a marker at `~/.colima/<name>/.colimander.json` plus a colima.yaml that omits the default host home mount.
-- `colimander start <name>` — boots the VM with an empty placeholder mount that suppresses Colima's default `$HOME`/`$TMP` mounts. Verified inside the VM: `/Users/tapio/code`, `~/.ssh`, dotfiles all inaccessible.
-- `colimander stop | destroy | ssh | status <name>` — wrappers that respect the marker. Destroy also wipes the placeholder mount stub.
-- `colimander ls` — lists Colimander-managed profiles, including marker-only profiles that haven't been started yet.
-- `colimander ls --all` — shows every Colima profile on the host (read-only); makes visible which are managed.
-- **Safety guardrail**: all mutating commands refuse profiles without a Colimander marker unless `--force-unmanaged` is passed. Verified against an existing host with 7 unmanaged profiles (1 running) — guardrail correctly refused every attempt.
+- `colimander create <name> [--cpu N --memory G --disk G --start]`: writes a marker at `~/.colima/<name>/.colimander.json` plus a colima.yaml that omits the default host home mount.
+- `colimander start <name>`: boots the VM with an empty placeholder mount that suppresses Colima's default `$HOME`/`$TMP` mounts. Verified inside the VM: `/Users/tapio/code`, `~/.ssh`, dotfiles all inaccessible.
+- `colimander stop | destroy | ssh | status <name>`: wrappers that respect the marker. Destroy also wipes the placeholder mount stub.
+- `colimander ls`: lists Colimander-managed profiles, including marker-only profiles that haven't been started yet.
+- `colimander ls --all`: shows every Colima profile on the host (read-only); makes visible which are managed.
+- **Safety guardrail**: all mutating commands refuse profiles without a Colimander marker unless `--force-unmanaged` is passed. Verified against an existing host with 7 unmanaged profiles (1 running), and the guardrail correctly refused every attempt.
 
 What's not built:
 - The `secret` subcommands.
 - The `.local` hostname / `/etc/hosts` wiring for per-profile browser access.
 - The `colimander scale` resize helper and `colimander health` indicator.
-- A sibling project for remote-VPS environments (e.g. Hetzner) — same model, different substrate.
+- A sibling project for remote-VPS environments (e.g. Hetzner): same model, different substrate.
 
 Build: `make build`, or `go build -o colimander .` for just the CLI.
 
 ## Prior art that informed this
 
-- [Trail of Bits — claude-code-devcontainer](https://github.com/trailofbits/claude-code-devcontainer) — closest existing thing. Filesystem boundary is solid, no credential broker.
-- [Anthropic — Securely deploying AI agents](https://platform.claude.com/docs/en/agent-sdk/secure-deployment) — gestures at the proxy pattern.
-- [Patrick McCanna — A better way to limit Claude Code access to secrets](https://patrickmccanna.net/a-better-way-to-limit-claude-code-and-other-coding-agents-access-to-secrets/) — also gestures at the proxy pattern.
-- [Lima](https://lima-vm.io) and [Colima](https://colima.run) — the foundation Colimander sits on top of.
+- [Trail of Bits: claude-code-devcontainer](https://github.com/trailofbits/claude-code-devcontainer). Closest existing thing. Filesystem boundary is solid, no credential broker.
+- [Anthropic: Securely deploying AI agents](https://platform.claude.com/docs/en/agent-sdk/secure-deployment). Gestures at the proxy pattern.
+- [Patrick McCanna: A better way to limit Claude Code access to secrets](https://patrickmccanna.net/a-better-way-to-limit-claude-code-and-other-coding-agents-access-to-secrets/). Also gestures at the proxy pattern.
+- [Lima](https://lima-vm.io) and [Colima](https://colima.run): the foundation Colimander sits on top of.
 
 ## License
 

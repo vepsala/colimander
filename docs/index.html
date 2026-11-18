@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Colimander</title>
-<meta name="description" content="Local agent orchestrator for macOS, built on Colima/Lima, with a credential-firewalling proxy so a compromised agent can't exfiltrate anything that works off your machine.">
+<meta name="description" content="Per-project Colima VMs on macOS, with a host-side credential broker so the VM only holds handles that are useless off your machine.">
 <meta property="og:title" content="Colimander">
-<meta property="og:description" content="Per-project Colima VMs with a host-side credential broker. The VM only ever sees inert local handles.">
+<meta property="og:description" content="Per-project Colima VMs with a host-side credential broker. The VM holds handles, not real credentials.">
 <meta property="og:type" content="website">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>">
 <style>
@@ -81,14 +81,6 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 0; }
 /* header */
 header { border-bottom: 1px solid var(--line); background: var(--bg-soft); }
 .hero { padding: 72px 0 60px; }
-.eyebrow {
-  font-family: var(--mono);
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--accent);
-  margin: 0 0 14px;
-}
 .hero h1 { font-size: clamp(2.4rem, 7vw, 3.4rem); margin: 0 0 18px; }
 .tagline { font-size: clamp(1.05rem, 2.6vw, 1.3rem); color: var(--fg-dim); margin: 0 0 28px; max-width: 42ch; }
 .cta { display: flex; flex-wrap: wrap; gap: 12px; }
@@ -113,8 +105,7 @@ header { border-bottom: 1px solid var(--line); background: var(--bg-soft); }
   align-items: flex-start;
   background: var(--bg-soft);
   border: 1px solid var(--line);
-  border-left: 3px solid var(--warn);
-  border-radius: var(--radius);
+    border-radius: var(--radius);
   padding: 14px 18px;
   font-size: 15px;
   color: var(--fg-dim);
@@ -169,13 +160,12 @@ footer a { color: var(--fg-dim); }
 
 <header>
   <div class="wrap hero">
-    <p class="eyebrow">macOS · Colima · Go</p>
     <h1>Colimander</h1>
-    <p class="tagline">Per-project dev VMs with a credential firewall, so you can let an agent off the leash without handing it your real tokens.</p>
+    <p class="tagline">Per-project dev VMs on macOS, with a host-side credential broker so the agent doesn't hold your real tokens.</p>
     <div class="cta">
       <a class="btn btn-primary" href="https://github.com/vepsala/colimander">View on GitHub</a>
       <a class="btn" href="#how">How it works</a>
-      <a class="btn" href="#status">Status</a>
+      <a class="btn" href="#limits">Limits</a>
     </div>
   </div>
 </header>
@@ -183,21 +173,20 @@ footer a { color: var(--fg-dim); }
 <main class="wrap">
 
   <div class="notice">
-    <span aria-hidden="true">⚠︎</span>
-    <p style="margin:0"><strong>This is a personal tool, published as food for thought.</strong> I built it for my own machine and I don't suggest anyone run it blindly. Fork it, read it, steal the ideas.</p>
+    <p style="margin:0">I built it for myself. Run it at your own risk. MIT licensed. Fork it, read it, steal it, do what you want.</p>
   </div>
 
   <h2>The problem</h2>
-  <p>I work on 3–5 projects in parallel on an M3 with 36 GB of RAM. That isn't enough to keep five fully-provisioned dev environments hot — language servers, Postgres, browsers, agent VMs all stacked. So in practice: 1–2 "safe" environments, and unsafe shortcuts on the rest.</p>
-  <p>Agents like Claude Code thrive when they can see the whole environment — real language servers, real databases, real tools. The cloud-sandbox version is always a step behind. The cost is that <em>local-first agentic development</em> has become synonymous with <em>the agent has your real GitHub token, your real DB password, your real filesystem</em>.</p>
-  <p>Two halves of the chore:</p>
+  <p>I work on 3 projects in parallel on an M3 with 36 GB of RAM. That isn't enough to keep three fully-provisioned dev environments running, with language servers, Postgres, browsers and agent VMs all stacked. So before this I had 1–2 "safe" environments and took unsafe shortcuts on the rest.</p>
+  <p>Agents like Claude Code work best when they can use the whole environment: real language servers, real databases, real tools. The usual cost is that the agent also has your real GitHub token, your real database password and your real filesystem.</p>
+  <p>Colimander tries to help with two things:</p>
   <ul class="plain">
-    <li><strong>Lifecycle ergonomics</strong> — spin up, swap between, and tear down environments without losing track of what's where.</li>
-    <li><strong>Safety without overhead</strong> — run <code>claude --dangerously-skip-permissions</code> anywhere without holding your breath.</li>
+    <li><strong>Lifecycle:</strong> spin up, switch between and tear down environments without losing track of what's where.</li>
+    <li><strong>Less at stake:</strong> run an agent with fewer permission prompts, with less to lose if something goes wrong.</li>
   </ul>
 
   <h2 id="how">How it works</h2>
-  <p>Each project is a Colima profile — its own VM, disk, and Docker context, with <strong>no host bind-mount</strong>. Real secrets stay in macOS Keychain on the host. The VM gets local-only handles, and a host daemon brokers every sensitive connection, swapping in the real credential only for operations its policy allows.</p>
+  <p>Each project is a Colima profile with its own VM, disk and Docker context, and <strong>no host bind-mount</strong>. Real credentials stay on the host. The VM gets local-only handles, and a host daemon brokers the sensitive connections, using the real credential only for operations its policy allows.</p>
 
   <figure>
     <svg viewBox="0 0 800 300" role="img" aria-label="Diagram: a VM holding only inert handles talks to a host-side broker, which holds the real credentials and applies policy before forwarding to GitHub, fly.io, and Doppler.">
@@ -247,108 +236,79 @@ footer a { color: var(--fg-dim); }
         <rect x="580" y="178" width="196" height="38" rx="7" fill="currentColor" fill-opacity=".05" stroke="currentColor" stroke-opacity=".2"/>
         <text x="594" y="202" fill="currentColor" opacity=".85">api.doppler.com</text>
 
-        <text x="400" y="278" fill="currentColor" font-size="11.5" opacity=".5" text-anchor="middle">a leaked handle is inert off this machine</text>
+        <text x="400" y="278" fill="currentColor" font-size="11.5" opacity=".5" text-anchor="middle">a leaked handle doesn't work off this machine</text>
       </g>
     </svg>
-    <figcaption>The VM never holds a credential that works anywhere else.</figcaption>
+    <figcaption>The VM holds handles, and the real credentials stay on the host.</figcaption>
   </figure>
 
   <div class="grid">
     <div class="card">
       <h3>One VM per project</h3>
-      <p>Each profile is a Colima VM with its own disk and Docker context, templated from a <code>colima.yaml</code> Colimander owns. Create, start, stop, destroy are thin wrappers.</p>
+      <p>Each profile is a Colima VM with its own disk and Docker context. Create them with <code>colimander setup</code> or the Mac app.</p>
     </div>
     <div class="card">
       <h3>No host bind-mount</h3>
-      <p>Project files live only inside the VM. You edit over SSH from Zed / VS Code / Cursor / JetBrains. If the VM gets popped and drops a binary, the host never sees it.</p>
+      <p>Project files live only inside the VM. You edit over SSH from your editor, and the VM can't read your Mac's files.</p>
     </div>
     <div class="card">
-      <h3>No port collisions</h3>
-      <p>Every profile gets a routable IP and a <code>.local</code> hostname in <code>/etc/hosts</code>, so <code>myproj.local:3000</code> and <code>other.local:3000</code> both work at once.</p>
+      <h3>Credential broker</h3>
+      <p>GitHub, Fly and Doppler calls go through a daemon on your Mac. The policy can be finer than a fine-grained PAT, for example allowing writes to two repos but denying repo deletion.</p>
     </div>
     <div class="card">
-      <h3>Policy the platform can't express</h3>
-      <p>Allow writes to two repos, allow repo creation, deny <code>DELETE /repos/*</code>, deny renames. Finer than a fine-grained PAT, without installing an App per org.</p>
+      <h3>Database proxy</h3>
+      <p>Agents connect to Postgres through local credentials you can rotate. It can mask columns, scan results for things like emails and card numbers, and hold writes for your approval.</p>
     </div>
     <div class="card">
-      <h3>Aggressive defaults</h3>
-      <p>Deletion, webhook tampering, SSH/GPG key changes, secret deletion, org settings, role escalation — denied. Reads and benign writes pass.</p>
+      <h3>Egress monitoring</h3>
+      <p>See which domains each sandbox's web traffic goes to and how much data was sent. It records traffic, it doesn't block or decrypt it.</p>
     </div>
     <div class="card">
-      <h3>Every redemption logged</h3>
-      <p><code>colimander logs</code> is a live TUI over the broker audit log, filterable by profile, surface, and action — including auth failures.</p>
+      <h3>Mac app</h3>
+      <p>One window for sandboxes, egress, broker activity, databases and tokens. Every broker request is logged.</p>
     </div>
   </div>
 
-  <h2>Why a broker beats a firewall</h2>
-  <p>Most agent-sandbox setups need egress allow-lists, DNS filtering, iptables rules — all trying to stop credential exfiltration at the network layer. If the credential the agent holds <em>doesn't work off your machine in the first place</em>, you don't need that ceremony. The VM can have wide network access; the interesting things are gated at the broker.</p>
-  <p>That's what makes <code>--dangerously-skip-permissions</code> defensible: not because the agent is well-behaved, but because the worst it can do is bounded by policy — and rotating a secret changes nothing inside the VM.</p>
-
-  <h2 id="status">Status</h2>
-  <p>v0, and honest about it: the lifecycle CLI and the credential broker work and are validated by hand on macOS with real VM boots. Several conveniences from the design doc are still unwritten.</p>
-  <div class="status">
-    <div>
-      <h3>Working</h3>
-      <ul class="done">
-        <li><code>setup</code> wizard, <code>create</code>, <code>start</code>, <code>stop</code>, <code>destroy</code></li>
-        <li><code>ssh</code>, <code>status</code>, <code>ls</code>, <code>ports</code>, <code>hosts-sync</code></li>
-        <li><code>broker</code> — git + GitHub API proxy with allow/deny policy</li>
-        <li><code>policy</code>, <code>tokens</code> — fly.io and Doppler surfaces</li>
-        <li><code>logs</code> — live TUI over the audit log</li>
-        <li><code>packages</code> — Claude Code, OpenCode, Postgres, Node via mise</li>
-        <li>Guardrail: mutating commands refuse unmanaged profiles</li>
-      </ul>
-    </div>
-    <div>
-      <h3>Not built yet</h3>
-      <ul class="todo">
-        <li>Keychain-backed <code>secret</code> slots with TTLs</li>
-        <li><code>scale</code> resize helper and <code>health</code> indicator</li>
-        <li>Force-push detection on <code>git push</code></li>
-        <li>mTLS profile identity (today: Basic auth with a handle)</li>
-        <li>SOCKS5 proxy for inspecting outbound traffic</li>
-        <li>A sibling project for remote VPS environments</li>
-      </ul>
-    </div>
-  </div>
+  <h2>Why a broker</h2>
+  <p>Many agent sandboxes try to stop credential theft at the network layer, with egress allow-lists, DNS filtering and firewall rules. Colimander takes a different angle: if the credential in the VM doesn't work off your machine, a leaked credential matters much less.</p>
+  <p>That doesn't make the agent safe. It can still do anything the broker policy allows, anything inside the VM, and it can still leak your code or data. The broker only limits what the credentials themselves can be used for.</p>
 
   <h2>Try it</h2>
-  <pre><code>git clone https://github.com/vepsala/colimander
+  <pre><code>git clone https://github.com/vepsala/colimander.git
 cd colimander
-go build -o colimander .
+make app</code></pre>
+  <p>This builds the CLI and the Mac app, starts the daemon and opens the app. You need macOS, the Xcode command line tools, Go, <a href="https://colima.run">Colima</a> and <code>gh</code>. <a href="https://github.com/vepsala/colimander/blob/main/README.md">The README</a> has the details and the CLI usage.</p>
 
-./colimander setup          # wizard: deps, name, specs, optional import
-./colimander broker start   # host-side credential proxy
-./colimander ls</code></pre>
-  <p>Requires macOS with <a href="https://colima.run">Colima</a> and Go. <a href="https://github.com/vepsala/colimander/blob/main/README.md">The README</a> carries the full design rationale, and <a href="https://github.com/vepsala/colimander/blob/main/docs/external-brokers.md">docs/external-brokers.md</a> covers the fly.io and Doppler surfaces.</p>
-
-  <h2>Threat model</h2>
+  <h2 id="limits">Limits</h2>
   <div class="status">
     <div>
-      <h3>Defends against</h3>
+      <h3>Helps with</h3>
       <ul class="done">
-        <li>Agent writing to the host filesystem — no bind-mount</li>
-        <li>Credential exfiltration — only inert handles are in the VM</li>
-        <li>Cross-project credential reuse — identity is per profile</li>
-        <li>"I forgot prod is still loaded" — TTLs on borrowed secrets</li>
+        <li>An agent reading or writing your Mac's files</li>
+        <li>Credentials that keep working after they leak</li>
+        <li>One project's credentials being used in another</li>
       </ul>
     </div>
     <div>
-      <h3>Does not defend against</h3>
+      <h3>Doesn't help with</h3>
       <ul class="todo">
+        <li>Anything the broker policy allows</li>
+        <li>Leaking code or data from inside the VM</li>
+        <li>Root inside the VM getting around the VM-side rules</li>
         <li>A kernel exploit that escapes the VM</li>
-        <li>You typing the real secret into the VM yourself</li>
-        <li>macOS itself being compromised — Keychain is the trust root</li>
+        <li>You typing a real secret into the VM yourself</li>
+        <li>macOS itself being compromised</li>
       </ul>
     </div>
   </div>
+  <p>None of this is foolproof. It reduces accidental exposure and shows you what's happening, but it won't stop a determined attacker.</p>
 
   <h2>Prior art</h2>
   <ul class="plain">
-    <li><a href="https://github.com/trailofbits/claude-code-devcontainer">Trail of Bits — claude-code-devcontainer</a>: closest existing thing; solid filesystem boundary, no credential broker.</li>
-    <li><a href="https://platform.claude.com/docs/en/agent-sdk/secure-deployment">Anthropic — Securely deploying AI agents</a>: gestures at the proxy pattern.</li>
-    <li><a href="https://patrickmccanna.net/a-better-way-to-limit-claude-code-and-other-coding-agents-access-to-secrets/">Patrick McCanna — Limiting coding-agent access to secrets</a>: likewise.</li>
-    <li><a href="https://lima-vm.io">Lima</a> and <a href="https://colima.run">Colima</a>: the foundation this sits on.</li>
+    <li><a href="https://github.com/trailofbits/claude-code-devcontainer">Trail of Bits: claude-code-devcontainer</a>. The closest existing thing, with a solid filesystem boundary and no credential broker.</li>
+    <li><a href="https://platform.claude.com/docs/en/agent-sdk/secure-deployment">Anthropic: Securely deploying AI agents</a>. Describes the proxy pattern.</li>
+    <li><a href="https://patrickmccanna.net/a-better-way-to-limit-claude-code-and-other-coding-agents-access-to-secrets/">Patrick McCanna: Limiting coding-agent access to secrets</a>. Also describes the proxy pattern.</li>
+    <li><a href="https://lima-vm.io">Lima</a> and <a href="https://colima.run">Colima</a>, the foundation this sits on.</li>
   </ul>
 
 </main>
