@@ -74,7 +74,7 @@ Everything from here on is auto generated with LLM and I barely read it:
 
 ## Why this exists
 
-I work on 3 projects in parallel. My machine is an M3 with 36 GB of RAM, which isn't enough to keep three fully-provisioned dev environments running at once, with language servers, Postgres, browsers and agent VMs all stacked. So before this I ran 1-2 "safe" environments and used unsafe shortcuts (host credentials, host filesystem, no isolation) on the ones I only touched occasionally.
+I work on 3 projects in parallel. My machine is an M3 with 36 GB of RAM, which isn't enough to keep three fully-provisioned dev environments running at once, with language servers, Postgres, browsers and agent VMs all stacked.
 
 I don't want to give up local-first development. Agents like Claude Code thrive when they can see and use the full environment: language servers, real databases, real tools. The cloud-sandbox version is always a step behind. The cost is that "local-first agentic development" is currently synonymous with "the agent has access to your real GitHub token, your real DB password, your real filesystem."
 
