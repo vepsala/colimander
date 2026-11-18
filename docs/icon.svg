@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Colimander: a sealed box with a commander's star as its seal. -->
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#23345F"/>
+      <stop offset="1" stop-color="#121C3A"/>
+    </linearGradient>
+    <clipPath id="cube">
+      <path d="M491.2 212Q512 200 532.8 212L761.2 344Q782 356 782 380V644Q782 668 761.2 680L532.8 812Q512 824 491.2 812L262.8 680Q242 668 242 644V380Q242 356 262.8 344Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- Body: 824x824 squircle, 100px margin on every side -->
+  <path fill="url(#body)" d="M330 100H694C850 100 924 174 924 330V694C924 850 850 924 694 924H330C174 924 100 850 100 694V330C100 174 174 100 330 100Z"/>
+
+  <!-- Sealed cube: three flat faces cut from one rounded hexagon -->
+  <g clip-path="url(#cube)">
+    <rect x="200" y="180" width="624" height="660" fill="#A9BCE6"/>
+    <path fill="#7088C4" d="M512 512 800 346V840H512Z"/>
+    <path fill="#F2F6FF" d="M512 512 800 346V180H224V346Z"/>
+  </g>
+
+  <!-- Commander's star, with a navy keyline that lifts it off the cube -->
+  <path fill="#FFB320" stroke="#121C3A" stroke-width="36" stroke-linejoin="round" paint-order="stroke" d="M512 342 559 447.3 673.7 459.5 588.1 536.7 611.9 649.5 512 592 412.1 649.5 435.9 536.7 350.3 459.5 465 447.3Z"/>
+</svg>
